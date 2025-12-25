@@ -7,5 +7,6 @@
 ## SavedVariables: MeowerDB
 
 EmoteProvider.lua
+EmoteResponder.lua
 Core.lua
 Config.lua
