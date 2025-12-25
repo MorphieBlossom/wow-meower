@@ -6,5 +6,6 @@
 ## IconTexture: Interface\Icons\Pet_Type_Cat
 ## SavedVariables: MeowerDB
 
+EmoteProvider.lua
 Core.lua
 Config.lua
