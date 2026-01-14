@@ -1,0 +1,18 @@
+## Interface: 110207, 120000, 120001
+## Version: 1.0.0
+
+## X-Flavor: retail
+## X-Expansion: TWW
+
+## Title: Meower
+## Author: MorphieBlossom (Morphenia AD-EU)
+## Notes: Let your inner meower out
+## SavedVariables: MeowerDB
+
+Libraries\Load_Libraries.xml
+Init.lua
+Modules\Utils.lua
+Modules\EmoteProvider.lua
+Modules\EmoteResponder.lua
+Modules\Settings.lua
+Modules\Commands.lua
