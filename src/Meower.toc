@@ -1,18 +1,23 @@
 ## Interface: 110207, 120000, 120001
 ## Version: 1.0.0
+## X-Date: 2026-05-21
 
 ## X-Flavor: retail
 ## X-Expansion: TWW
 
 ## Title: Meower
 ## Author: MorphieBlossom (Morphenia AD-EU)
-## Notes: Let your inner meower out
-## SavedVariables: MeowerDB
+## Notes: Watches chat for custom phrases and reacts with replies, emotes, invites, or kick prompts.
+## Category: User Interface
+## SavedVariables: MeowerData
+## X-Github: https://github.com/MorphieBlossom/wow-meower
 
 Libraries\Load_Libraries.xml
 Init.lua
-Modules\Utils.lua
-Modules\EmoteProvider.lua
-Modules\EmoteResponder.lua
+Modules\Constants.lua
+Modules\Helpers.lua
 Modules\Settings.lua
-Modules\Commands.lua
+Modules\Changelog.lua
+Modules\EmoteProvider.lua
+Modules\Watchers.lua
+Modules\WatchersPanel.lua

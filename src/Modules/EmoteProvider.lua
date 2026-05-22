@@ -1,72 +1,52 @@
-local addonName, addon = ...
+local _, addon = ...
 addon.EmoteProvider = {}
 local EP = addon.EmoteProvider
-
--- Expanded list of emote tokens based on WoW API
-local emoteTokens = {
-  "ABSORB", "AGREE", "AMAZE", "ANGRY", "APOLOGIZE", "APPLAUD", "ATTACKTARGET",
-  "BARK", "BASHFUL", "BECKON", "BEG", "BELCH", "BITE", "BLEED", "BLINK", "BLOODSPORT",
-  "BLUSH", "BOGGLE", "BONK", "BORED", "BOUNCE", "BOW", "BRB", "BURP", "BYE",
-  "CACKLE", "CALM", "CAT", "CHARGE", "CHEER", "CHEW", "CHICKEN", "CHUCKLE", "CLAP",
-  "COLD", "COMFORT", "COMMEND", "CONFUSED", "CONGRATULATE", "COUGH", "COWER", "CRACK",
-  "CRINGE", "CRY", "CUDDLE", "CURIOUS", "CURTSEY", "DANCE", "DISAPPOINT", "DOH", "DOOM",
-  "DRINK", "DROOL", "DUCK", "EAT", "EXCITED", "EYE", "FACEPALM", "FAREWELL", "FART",
-  "FEAR", "FEAST", "FIDGET", "FLAP", "FLEX", "FLIRT", "FOLLOW", "GASP", "GAZE",
-  "GIGGLE", "GLAD", "GLARE", "GLOAT", "GOODBYE", "GREET", "GRIN", "GROAN", "GROVEL",
-  "GROWL", "GUFFAW", "HAIL", "HAPPY", "HEALME", "HELLO", "HELPME", "HUG", "HUNGRY",
-  "IMPATIENT", "INCOMING", "INSULT", "INTRODUCE", "JK", "KISS", "KNEEL", "LAUGH",
-  "LAYDOWN", "LICK", "LISTEN", "LOST", "LOVE", "MASSAGE", "MOAN", "MOCK", "MOO",
-  "MOURN", "NO", "NOD", "NOSEPICK", "OOM", "OPENFIRE", "PANIC", "PAT", "PEER",
-  "PITY", "PLEAD", "POINT", "POKE", "PONDER", "POUNCE", "PRAISE", "PRAY", "PURR",
-  "PUZZLE", "QUESTION", "RAISE", "RASP", "READY", "ROAR", "ROFL", "RUDE", "SALUTE",
-  "SCARED", "SCRATCH", "SEXY", "SHAKE", "SHIMMY", "SHIVER", "SHOO", "SHOUT", "SHRUG",
-  "SHY", "SIGH", "SING", "SIT", "SLAP", "SLEEP", "SMILE", "SMIRK", "SNARL", "SNICKER",
-  "SNIFF", "SNUB", "SOOTHE", "SPIT", "STAND", "STARE", "SURPRISED", "SURRENDER",
-  "TALK", "TALKEX", "TALKQ", "TAP", "TAUNT", "TEASE", "THANK", "THANKS", "THIRSTY",
-  "THREATEN", "TICKLE", "TIRED", "TRAIN", "VETO", "VICTORY", "VIOLIN", "VOLUNTEER",
-  "WAIT", "WAVE", "WEEP", "WELCOME", "WHINE", "WHISTLE", "WINK", "WORK", "WRATH",
-  "YAWN", "YAY", "YES"
-}
 
 -- Map localized message pattern -> Emote Token
 local msgToToken = {}
 local availableEmotes = {}
 
+-- Fallback for clients that don't expose MAXEMOTEINDEX (older flavors, very
+-- early load). Retail (TWW) is at 628 today; 800 leaves room for additions
+-- before a refresh is needed.
+local MAX_INDEX_FALLBACK = 800
+
 function EP:Init()
   wipe(msgToToken)
   wipe(availableEmotes)
 
-  for _, token in ipairs(emoteTokens) do
-    -- Globals:
-    -- EMOTE_TOKEN_NONE -> "Player dances."
-    -- EMOTE_TOKEN_YOU  -> "Player dances with you." (This is what we match against usually)
+  -- Blizzard's ChatEmoteConstants.lua publishes EMOTE<i>_TOKEN globals (with
+  -- MAXEMOTEINDEX as the upper bound). Iterating those is the canonical way
+  -- to enumerate every emote the client knows about — it auto-tracks tokens
+  -- added in future patches without a code change here. Indices are
+  -- non-contiguous (gaps past 455 for faction shouts and recent additions),
+  -- so the loop tolerates missing slots.
+  local maxIndex = _G.MAXEMOTEINDEX or MAX_INDEX_FALLBACK
+  for i = 1, maxIndex do
+    local token = _G["EMOTE" .. i .. "_TOKEN"]
+    if token and token ~= "UNUSED" then
+      -- EMOTE_<TOKEN>_NONE -> "%s waves."        (caster, no target)
+      -- EMOTE_<TOKEN>_YOU  -> "%s waves at you." (caster targets the player)
+      -- Other variants exist (_OTHER, _SELF, _TARGET) — add here if needed.
+      local patternYou = _G["EMOTE_" .. token .. "_YOU"]
+      local patternNone = _G["EMOTE_" .. token .. "_NONE"]
 
-    local patternYou = _G["EMOTE_" .. token .. "_YOU"]
-    local patternNone = _G["EMOTE_" .. token .. "_NONE"]
+      if patternYou then
+        msgToToken[patternYou] = token
+      end
 
-    if patternYou then
-      -- Store for matching logic (someone emotes ON us)
-      msgToToken[patternYou] = token
-
-      -- Prepare data for UI or other uses
-      -- We store the raw patterns too so we can display them if needed
-      tinsert(availableEmotes, {
-        token = token,
-        command = "/" .. token:lower(),
-        label = token:lower(),
-        textNone = patternNone or "",
-        textYou = patternYou
-      })
-    elseif patternNone then
-      -- Some emotes might not have a "YOU" version (uncommon for targeted ones, but possible)
-      -- If we only care about targeted replies, we might skip these, but let's include them for the list.
-      tinsert(availableEmotes, {
-        token = token,
-        command = "/" .. token:lower(),
-        label = token:lower(),
-        textNone = patternNone,
-        textYou = ""
-      })
+      -- Show in the dropdown if the token produces any displayable text or has
+      -- a slash command bound. Tokens with neither are unfinished/internal and
+      -- aren't useful as a reply.
+      if patternYou or patternNone or _G["EMOTE" .. i .. "_CMD1"] then
+        tinsert(availableEmotes, {
+          token = token,
+          command = "/" .. token:lower(),
+          label = token:lower(),
+          textNone = patternNone or "",
+          textYou = patternYou or "",
+        })
+      end
     end
   end
 
@@ -76,7 +56,7 @@ end
 
 function EP:GetAvailableEmotes()
   if #availableEmotes == 0 then
-    self:Initialize()
+    self:Init()
   end
   return availableEmotes
 end
@@ -86,7 +66,7 @@ end
 -- @param sender: The name of the sender
 function EP:MatchEmote(msg, sender)
   if #availableEmotes == 0 then
-    self:Initialize()
+    self:Init()
   end
 
   -- The messages are usually formatted like "%s pokes you."

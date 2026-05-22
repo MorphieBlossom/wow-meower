@@ -7,7 +7,7 @@ $commonDocs  = @("./LICENSE", "./README.md")
 # --- Prep ---
 if (!(Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir | Out-Null }
 
-# Collect all *.toc variants (HoverName.toc, HoverName_*.toc)
+# Collect all *.toc variants (Meower.toc, Meower_*.toc)
 $tocFiles = Get-ChildItem -Path $srcDir -Filter "$projectName*.toc" -File
 if ($tocFiles.Count -eq 0) {
   Write-Error "No .toc files found in $srcDir"
@@ -40,7 +40,7 @@ foreach ($toc in $tocFiles) {
     # Copy source
     Copy-Item -Path (Join-Path $srcDir "*") -Destination $addonDir -Recurse
 
-    # Ensure only the selected TOC is present inside the package (renamed to HoverName.toc)
+    # Ensure only the selected TOC is present inside the package (renamed to Meower.toc)
     Get-ChildItem -Path $addonDir -Filter "$projectName*.toc" -File | Remove-Item -Force
     Copy-Item -Path $toc.FullName -Destination (Join-Path $addonDir "$projectName.toc")
 
