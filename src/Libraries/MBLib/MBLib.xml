@@ -13,6 +13,8 @@
     <Script file="Modules\Commands.lua"/>
     <Script file="Modules\Changelog.lua"/>
     <Script file="Modules\Notifications.lua"/>
+    <Script file="Modules\MacroButton.lua"/>
+    <Script file="Modules\CopyPopup.lua"/>
     <Script file="Modules\OptionsScreen.lua"/>
     <!-- <Script file="Modules\CustomOptionsScreen.lua"/> -->
 </Ui>

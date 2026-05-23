@@ -17,11 +17,16 @@ MBLib.ICON_CHECKMARK = "|TInterface\\RaidFrame\\ReadyCheck-Ready:11|t"
 MBLib.ICON_CROSS     = "|TInterface\\RaidFrame\\ReadyCheck-NotReady:11|t"
 MBLib.ICON_LIST = "- "
 
+-- Author's project landing page — used by the "not installed" addon row to
+-- show a copyable link the user can paste in a browser. Shared because every
+-- MBLib consumer is one of MorphieBlossom's addons.
+MBLib.AUTHOR_URL = "https://www.curseforge.com/members/morphieblossom/projects"
+
 -- Other MorphieBlossom addons advertised on every consumer's main options page.
 -- The current addon is filtered out at render time, so this list is shared
 -- verbatim across all consumers of MBLib.
 MBLib.OTHER_ADDONS = {
   { name = "HoverName", description = "Shows player and NPC names when you hover over them in the world." },
-  { name = "StatInfo",  description = "On-screen readout of primary, secondary, and tertiary stats with per-character priority highlighting." },
+  -- { name = "StatInfo",  description = "On-screen readout of primary, secondary, and tertiary stats with per-character priority highlighting." },
   { name = "Meower",    description = "Watches chat for custom phrases and reacts with replies, emotes, invites, or kick prompts." },
 }

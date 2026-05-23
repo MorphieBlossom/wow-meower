@@ -33,7 +33,7 @@ local addonName, addon = ...
 addon.MBLib = addon.MBLib or {}
 local MBLib = addon.MBLib
 
-MBLib._version = "1.0.3"
+MBLib._version = "1.0.4"
 MBLib._addonName = addonName
 MBLib._addon = addon
 MBLib._slashTriggers = {}

@@ -2,17 +2,6 @@ local _, addon = ...
 
 local Constants = {}
 
--- ===== Watch channels =====
--- Single source of truth for everything channel-related: the events Watchers
--- subscribes to, the labels rendered in the UI, and the chat type used when a
--- watcher replies in the same channel.
---
--- Each entry's table key is the *code-facing* name (Constants.CHANNELS.WHISPER)
--- — readable in source. The `key` field on each entry is the *storage-facing*
--- short code (one letter) that lives in SavedVariables under
--- watcher.channels[<key>]. Short codes keep the savedvariables file compact;
--- the named keys keep the code self-explanatory. CHANNEL_BY_KEY bridges the
--- two: when we receive a saved short code we resolve it to the full def.
 Constants.CHANNELS = {
   WHISPER = {
     key = "w",
@@ -73,8 +62,6 @@ Constants.CHANNELS = {
   },
 }
 
--- Display / iteration order. ipairs yields full channel defs, so consumers
--- write `for _, def in ipairs(CHANNEL_ORDER) do ... def.label / def.key end`.
 Constants.CHANNEL_ORDER = {
   Constants.CHANNELS.WHISPER,
   Constants.CHANNELS.BNET,
@@ -86,19 +73,11 @@ Constants.CHANNEL_ORDER = {
   Constants.CHANNELS.INSTANCE,
 }
 
--- Reverse lookup: short SavedVariables code -> full channel def. Use this when
--- you have a saved channelKey (e.g. from watcher.channels or an event map) and
--- need the def.
 Constants.CHANNEL_BY_KEY = {}
 for _, def in pairs(Constants.CHANNELS) do
   Constants.CHANNEL_BY_KEY[def.key] = def
 end
 
--- ===== Reply channel options =====
--- "same" routes the reply via the channel the trigger fired in; the other codes
--- pin the reply to a specific channel regardless of trigger source. These reuse
--- the same short codes as Constants.CHANNELS.*.key for channels that can both
--- be watched and replied in.
 Constants.REPLY_CHANNELS = { "same", "w", "g", "s", "p", "i", "r", "e" }
 Constants.REPLY_CHANNEL_LABEL = {
   same = "Same channel",
@@ -111,20 +90,83 @@ Constants.REPLY_CHANNEL_LABEL = {
   e    = "Emote",
 }
 
--- ===== Placeholders =====
--- Tokens of the form {key} that Helpers.applyPlaceholders substitutes into
--- reply text at fire time. The list is also the source of truth for the
--- placeholder-docs UI in WatchersPanel: add a new entry here and it shows up
--- as a clickable copy-paste row automatically.
 Constants.PLACEHOLDERS = {
   { key = "sender",  doc = "Sender character name (BattleTag for BNet whispers)." },
   { key = "trigger", doc = "The matched phrase, verbatim from your trigger list." },
   { key = "channel", doc = "Label of the channel the trigger fired in (Whisper, Party, Raid, ...)." },
 }
 
--- ===== New-watcher defaults =====
--- Returns a fresh table each call so callers can mutate freely without
--- bleeding into other in-flight edits.
+Constants.FRIENDS_MODES = { "anyone", "friends", "strangers" }
+Constants.FRIENDS_MODE_LABEL = {
+  anyone    = "Anyone",
+  friends   = "Friends only",
+  strangers = "Strangers only",
+}
+
+Constants.DAY_OF_WEEK_ORDER = { 2, 3, 4, 5, 6, 7, 1 }
+Constants.DAY_OF_WEEK_LABEL = {
+  [1] = "Sunday",
+  [2] = "Monday",
+  [3] = "Tuesday",
+  [4] = "Wednesday",
+  [5] = "Thursday",
+  [6] = "Friday",
+  [7] = "Saturday",
+}
+
+-- Single source of truth for the form filter. `formIDs` are the values GetShapeshiftFormID()
+Constants.DRUID_FORMS = {
+  { key = "BEAR",     label = "Bear",     formIDs = { 5 } },
+  { key = "CAT",      label = "Cat",      formIDs = { 1 } },
+  { key = "TRAVEL",   label = "Travel",   formIDs = { 3, 27 } },
+  { key = "MOONKIN",  label = "Moonkin",  formIDs = { 31 } },
+  { key = "TREE",     label = "Tree",     formIDs = { 2, 36 } },
+  { key = "STAG",     label = "Stag",     formIDs = { 29 } },
+  { key = "HUMANOID", label = "Humanoid", formIDs = { 0 } },
+}
+
+-- Reverse lookup: form ID -> form key. Built once at file load.
+Constants.DRUID_FORM_ID_TO_KEY = {}
+for _, form in ipairs(Constants.DRUID_FORMS) do
+  for _, id in ipairs(form.formIDs) do
+    Constants.DRUID_FORM_ID_TO_KEY[id] = form.key
+  end
+end
+
+local function newFilterDefaults()
+  return {
+    zone = {
+      enabled = false,
+      mapIDs = {},
+    },
+    friends = {
+      enabled = false,
+      mode = "anyone",
+    },
+    timeOfDay = {
+      enabled = false,
+      startHour = 0,
+      startMin = 0,
+      endHour = 23,
+      endMin = 59,
+    },
+    dayOfWeek = {
+      enabled = false,
+      days = { [1] = true, [2] = true, [3] = true, [4] = true, [5] = true, [6] = true, [7] = true },
+    },
+    druidForm = {
+      enabled = false,
+      forms = {},
+    },
+    cooldown = {
+      enabled = false,
+      seconds = 60, -- overrides SpamCooldown when on
+    },
+  }
+end
+
+Constants.NEW_FILTER_DEFAULTS = newFilterDefaults
+
 function Constants.NEW_WATCHER_DEFAULTS()
   return {
     name = "",
@@ -134,15 +176,16 @@ function Constants.NEW_WATCHER_DEFAULTS()
     channels = {},
     onlyLead = false,
     reply = {
-      text = "",
+      texts = {},
       ch = "same",
-      emote = nil,
+      emotes = {},
       emoteFirst = false,
       invite = false,
       inviteConfirm = false,
       inviteQueue = true,
       kick = false,
     },
+    filters = newFilterDefaults(),
   }
 end
 

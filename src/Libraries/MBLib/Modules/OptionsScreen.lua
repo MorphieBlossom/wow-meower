@@ -81,7 +81,7 @@ local function CreateAddonRow(parent, lastAnchor, isFirst, info)
   local installed = IsAddonInstalled(info.name)
 
   local row = CreateFrame("Frame", nil, parent)
-  row:SetHeight(installed and 24 or 18)
+  row:SetHeight(24)
   if isFirst then
     row:SetPoint("TOPLEFT", lastAnchor, "BOTTOMLEFT", 10, -10)
   else
@@ -106,26 +106,31 @@ local function CreateAddonRow(parent, lastAnchor, isFirst, info)
   end)
   statusBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-  -- Addon name — Blizzard-style Button when installed, plain text otherwise.
-  local nameAnchor
+  -- Addon name — always a Blizzard-style Button. Installed addons jump to
+  -- their settings page; missing ones open a CopyPopup with the CurseForge
+  -- author link so the user can grab the download URL.
+  local nameBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+  nameBtn:SetPoint("LEFT", statusBtn, "RIGHT", 6, 0)
+  nameBtn:SetText(info.name)
+  nameBtn:SetHeight(22)
+  nameBtn:SetWidth(nameBtn:GetTextWidth() + 20)
   if installed then
-    local nameBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    nameBtn:SetPoint("LEFT", statusBtn, "RIGHT", 6, 0)
-    nameBtn:SetText(info.name)
-    nameBtn:SetHeight(22)
-    nameBtn:SetWidth(nameBtn:GetTextWidth() + 20)
     nameBtn:SetScript("OnClick", function()
       local handler = SlashCmdList[info.name:upper()]
       if handler then handler("settings") end
     end)
-    nameAnchor = nameBtn
   else
-    local nameFS = row:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    nameFS:SetPoint("LEFT", statusBtn, "RIGHT", 6, 0)
-    nameFS:SetTextColor(1, 0.82, 0)
-    nameFS:SetText(info.name)
-    nameAnchor = nameFS
+    nameBtn:SetScript("OnClick", function()
+      if MBLib.CopyPopup and MBLib.CopyPopup.Show then
+        MBLib.CopyPopup:Show({
+          title       = "Get " .. info.name,
+          description = "Copy the link below and open it in your browser to find this addon on CurseForge.",
+          text        = MBLib.AUTHOR_URL,
+        })
+      end
+    end)
   end
+  local nameAnchor = nameBtn
 
   -- Description fills the rest of the row.
   local desc = row:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
@@ -142,11 +147,44 @@ local function CreateAddonRow(parent, lastAnchor, isFirst, info)
 end
 
 local function CreateOtherAddonsList(parent, anchor)
-  local title = parent:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-  title:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 20, -20)
+  -- The header is itself a clickable Button that opens the CopyPopup with the
+  -- author's CurseForge page — same affordance as the per-addon name buttons
+  -- below, so the whole section reads as "click anywhere to get the link".
+  local titleBtn = CreateFrame("Button", nil, parent)
+  titleBtn:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 20, -20)
+  titleBtn:SetHeight(18)
+
+  local title = titleBtn:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+  title:SetPoint("LEFT", titleBtn, "LEFT", 0, 0)
   title:SetText("Other Addons by MorphieBlossom:")
 
-  local lastAnchor = title
+  -- Fit the hit region to the rendered text. GetStringWidth returns 0 before
+  -- the FontString has been through a layout pass (which only happens when
+  -- the canvas is first shown), so retry on the next frame until populated.
+  local function fitBtn()
+    local w = title:GetStringWidth()
+    if w and w > 0 then
+      titleBtn:SetWidth(w)
+    else
+      C_Timer.After(0, fitBtn)
+    end
+  end
+  fitBtn()
+
+  titleBtn:RegisterForClicks("LeftButtonUp")
+  titleBtn:SetScript("OnClick", function()
+    if MBLib.CopyPopup and MBLib.CopyPopup.Show then
+      MBLib.CopyPopup:Show({
+        title       = "Other addons by MorphieBlossom",
+        description = "Copy the link below and open it in your browser to see all of my addons on CurseForge.",
+        text        = MBLib.AUTHOR_URL,
+      })
+    end
+  end)
+  titleBtn:SetScript("OnEnter", function() title:SetTextColor(1, 1, 1) end)
+  titleBtn:SetScript("OnLeave", function() title:SetTextColor(1, 0.82, 0) end)
+
+  local lastAnchor = titleBtn
   local isFirst = true
   ---@diagnostic disable-next-line: undefined-global, undefined-field
   for _, info in ipairs(MBLib.OTHER_ADDONS or {}) do
@@ -173,6 +211,11 @@ local function CreateMainFrame()
   local title = mainFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalHuge")
   title:SetPoint("LEFT", mainFrame, "TOPLEFT", iconPath and 126 or 20, -32)
   title:SetText(C_AddOns.GetAddOnMetadata(addonName, "Title"))
+
+  -- (The macro pickup button lives on the Settings subcategory, mounted
+  -- via the MBLib_MacroButtonRowTemplate initializer in
+  -- CreateSettingsCategory below. The main canvas page stays clean —
+  -- just identity + version + contacts + commands.)
 
   -- Anchor description with TOPLEFT + RIGHT so it wraps to fit the panel
   -- width instead of overflowing on long Notes strings.
@@ -266,6 +309,14 @@ local function CreateSettingsCategory(parent)
 
   local subcategoryName = MBLib.GetSettingsSubcategoryName and MBLib:GetSettingsSubcategoryName() or "Display Settings"
   local category, layout = Settings.RegisterVerticalLayoutSubcategory(parent, subcategoryName)
+  MBLib._settingsSubcategory = category
+
+  -- Optional macro pickup button — mounted into the chrome of the
+  -- SettingsPanel (next to "Defaults"), only visible while this
+  -- subcategory is the active one. See MacroButton:MountInTopBar.
+  if MBLib._macroButton and MBLib.MacroButton and MBLib.MacroButton.MountInTopBar then
+    MBLib.MacroButton:MountInTopBar(category)
+  end
 
   for _, group in ipairs(visibleGroupOrder) do
     layout:AddInitializer(Settings.CreateElementInitializer("SettingsListSectionHeaderTemplate", { name = group }))

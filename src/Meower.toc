@@ -1,23 +1,31 @@
-## Interface: 110207, 120000, 120001
-## Version: 1.0.0
-## X-Date: 2026-05-21
-
-## X-Flavor: retail
-## X-Expansion: TWW
+## Interface: 120005, 120007
+## Version: 12.0.5.0
+## X-Date: 2026-05-24
 
 ## Title: Meower
 ## Author: MorphieBlossom (Morphenia AD-EU)
-## Notes: Watches chat for custom phrases and reacts with replies, emotes, invites, or kick prompts.
+## Notes: Auto reply on chat with custom phrases, emotes, invites, or kick prompts.
 ## Category: User Interface
 ## SavedVariables: MeowerData
+## IconTexture: Interface\AddOns\Meower\Media\meower-icon.png
+
+## X-Flavor: retail
+## X-Expansion: TWW
 ## X-Github: https://github.com/MorphieBlossom/wow-meower
+## X-Curse-Project-ID: 1547349
+## X-CurseForge: https://www.curseforge.com/wow/addons/meower
 
 Libraries\Load_Libraries.xml
 Init.lua
-Modules\Constants.lua
-Modules\Helpers.lua
+Modules\Strings.lua
 Modules\Settings.lua
+Modules\Core\Hooks.lua
+Modules\Core\Constants.lua
+Modules\Core\Helpers.lua
+Modules\Core\EmoteProvider.lua
+Modules\Core\Filters.lua
+Modules\Core\Watchers.lua
+Modules\Core\Debug.lua
+Modules\Core\WatchersPanel.lua
 Modules\Changelog.lua
-Modules\EmoteProvider.lua
-Modules\Watchers.lua
-Modules\WatchersPanel.lua
+Modules\Extras\Seasonal.lua
