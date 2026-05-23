@@ -1,6 +1,6 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 ---
-### `1.0.0` (2026-01-15)
-**Version update**
-- Updated to game version 12.0.0
+### `12.0.5.0` (2026-05-24)
+**New**
+- Initial release of the addon!

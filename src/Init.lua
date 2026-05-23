@@ -1,46 +1,36 @@
 local addonName, addon = ...
 
--- SavedVariables must be declared in .toc:
-local dbName = addonName .. "Data"
-addon.DB_Name = dbName
+addon.MBLib:AddSlashTrigger("/mw")
+addon.MBLib:SetIcon("Interface\\AddOns\\" .. addonName .. "\\Media\\meower-icon.png")
+addon.MBLib:SetSettingsSubcategoryName("Settings")
+addon.MBLib:SetMacroButton({
+  icon      = "INV_BabyEversongLynx_Black",
+  macroName = "Meower settings",
+  macroBody = "/mw settings",
+  tooltip   = {
+    title = "Open Meower settings",
+    desc  = "Drop it on your action bar for a shortcut button to open Meower settings.",
+  },
+})
 
--- Constant values
-addon.COLOR_DEFAULT = { r = 1, g = 1, b = 1 }
-addon.COLOR_DEAD = { r = 136 / 255, g = 136 / 255, b = 136 / 255 }
-addon.COLOR_HOSTILE = { r = 1, g = 68 / 255, b = 68 / 255 }
-addon.COLOR_NEUTRAL = { r = 1, g = 1, b = 68 / 255 }
-addon.COLOR_HOSTILE_UNATTACKABLE = { r = 210 / 255, g = 76 / 255, b = 56 / 255 }
-addon.COLOR_RARE = { r = 226 / 255, g = 228 / 255, b = 226 / 255 }
-addon.COLOR_ELITE = { r = 213 / 255, g = 154 / 255, b = 18 / 255 }
-addon.COLOR_COMPLETE = { r = 136 / 255, g = 136 / 255, b = 136 / 255 }
-addon.ICON_CHECKMARK = "|TInterface\\RaidFrame\\ReadyCheck-Ready:11|t"
-addon.ICON_LIST = "- "
-
--- Define additional configurable slash commands here; /addonName is always registered
-addon.COMMANDS_TRIGGERLIST = { "/mw" }
-addon.VERSION = C_AddOns.GetAddOnMetadata(addonName, "Version")
-addon.NAME = C_AddOns.GetAddOnMetadata(addonName, "Title")
-
-
--- Create a temporary frame to register for the ADDON_LOADED event
-local initFrame = CreateFrame("Frame")
-initFrame:RegisterEvent("ADDON_LOADED")
-initFrame:SetScript("OnEvent", function(self, event, name)
+local f = CreateFrame("Frame")
+f:RegisterEvent("ADDON_LOADED")
+f:SetScript("OnEvent", function(self, _, name)
   if name == addonName then
-    _G[dbName] = _G[dbName] or {}
-    addon.DB = _G[dbName]
-
-    -- Load modules
-    addon:OnInitialize()
-
-    -- Clean up the temporary frame
+    addon.MBLib:Init()
+    if addon.Debug and addon.Debug.Init then
+      addon.Debug:Init()
+    end
+    if addon.Watchers and addon.Watchers.Init then
+      addon.Watchers:Init()
+    end
+    -- Extras register against addon.Hooks AFTER core init so they see
+    -- a fully-formed addon table. Each Extra is responsible for its own
+    -- enabled-gating; we just hand it the chance to wire up.
+    if addon.Extras and addon.Extras.Seasonal and addon.Extras.Seasonal.Register then
+      addon.Extras.Seasonal:Register()
+    end
     self:UnregisterEvent("ADDON_LOADED")
     self:SetScript("OnEvent", nil)
   end
 end)
-
-function addon:OnInitialize()
-  if addon.Settings then addon.Settings:Init() end
-  if addon.EmoteProvider then addon.EmoteProvider:Init() end
-  if addon.EmoteResponder then addon.EmoteResponder:Init() end
-end
