@@ -48,7 +48,7 @@ if (!(Test-Path $addonDir)) {
 # Copy payload
 Copy-Item -Path (Join-Path $srcDir "*") -Destination $addonDir -Recurse -Force
 
-# Ensure only the chosen TOC is present (rename to HoverName.toc)
+# Ensure only the chosen TOC is present (rename to Meower.toc)
 Get-ChildItem -Path $addonDir -Filter "$projectName*.toc" -File | Remove-Item -Force
 Copy-Item -Path $tocWanted -Destination (Join-Path $addonDir "$projectName.toc") -Force
 
