@@ -167,12 +167,53 @@ end
 
 Constants.NEW_FILTER_DEFAULTS = newFilterDefaults
 
+-- Curated list of built-in WoW sound kit IDs that read well as a notification
+-- cue. Stored as raw IDs so the same list works on Retail and Classic flavors
+-- (the SOUNDKIT.* table differs across clients; numeric IDs are stable).
+-- "(none)" is represented by storing nil / SOUND_NONE in the watcher's
+-- notifications.sound field — the dropdown surfaces the sentinel so the
+-- "no sound" choice is always selectable.
+-- Notification sound catalogue. Each entry's `value` is what gets stored in
+-- the watcher's notifications.sound field. The value's *type* discriminates
+-- which API plays it back (see playNotificationSound in Watchers.lua):
+--   number              -> PlaySound(value, "Master")        SoundKit ID
+--   string "file:<id>"  -> PlaySoundFile(<id>, "Master")     FileDataID
+--   other string        -> LSM:Fetch("sound", value) then PlaySoundFile path
+-- SOUND_NONE = 0 is the "no sound" sentinel; treated as nil at runtime.
+-- IDs verified against https://www.wowhead.com/sounds (URL form /sound=ID/...);
+-- add new entries only after confirming the ID resolves to the right clip.
+Constants.SOUND_NONE = 0
+Constants.SOUNDS = {
+  { value = 12867,         label = "Alarm Clock" },
+  { value = 10030,         label = "Bloodlust" },
+  { value = 1263,          label = "Human Male Aggro" },
+  { value = 120,           label = "Loot Coin" },
+  { value = "file:597860", label = "Meow" },
+  { value = 416,           label = "Murloc Aggro" },
+  { value = 7094,          label = "Peon: More work?" },
+  { value = 6192,          label = "Peon: Ready to work" },
+  { value = 7194,          label = "Peon Greetings" },
+  { value = 8959,          label = "Raid Warning" },
+  { value = 8960,          label = "Ready Check" },
+  { value = 3081,          label = "Tell Message" },
+}
+-- Keep alphabetical by label so the dropdown order stays stable when we add
+-- entries. (none) is injected at the top of the dropdown by the UI layer.
+table.sort(Constants.SOUNDS, function(a, b) return a.label < b.label end)
+
 function Constants.NEW_WATCHER_DEFAULTS()
   return {
     name = "",
     enabled = true,
     triggers = {},
-    exact = false,
+    -- Parallel to `triggers`: boolean per phrase. true means the phrase only
+    -- matches when message casing matches exactly. nil/false = case-insensitive
+    -- (the legacy / default behavior).
+    triggerCaseSensitive = {},
+    -- Parallel to `triggers`: boolean per phrase. true means the whole message
+    -- (after trim) must equal the phrase; false/nil means whole-word substring
+    -- match anywhere in the message — the historical default.
+    triggerExact = {},
     channels = {},
     onlyLead = false,
     reply = {
@@ -183,7 +224,16 @@ function Constants.NEW_WATCHER_DEFAULTS()
       invite = false,
       inviteConfirm = false,
       inviteQueue = true,
+      guildInvite = false,
       kick = false,
+    },
+    notifications = {
+      sound = Constants.SOUND_NONE,
+      noReply = false,
+      -- Per-trigger chat coloring. Indexed alongside `triggers`. Each entry
+      -- is one of: nil/"" (no coloring), "class" (use sender's class color),
+      -- or a 6-digit lowercase hex RRGGBB (no "#" prefix, no alpha).
+      triggerColors = {},
     },
     filters = newFilterDefaults(),
   }

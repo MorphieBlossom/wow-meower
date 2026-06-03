@@ -28,8 +28,11 @@ function Update-ChangelogFromLua {
   if (!(Test-Path $LuaPath)) { Write-Verbose "Lua changelog not found: $LuaPath"; return }
   if (!(Test-Path $ChangelogPath)) { Write-Verbose "Markdown changelog not found: $ChangelogPath"; return }
 
-  $lua = Get-Content -Raw $LuaPath
-  $md  = Get-Content -Raw $ChangelogPath
+  # Force UTF-8 when reading. Without -Encoding, Windows PowerShell 5.1 falls
+  # back to the system codepage (often Windows-1252), which mangles non-ASCII
+  # bytes like em-dashes ("—" -> "â€"") on round-trip through this function.
+  $lua = Get-Content -Raw -Encoding UTF8 $LuaPath
+  $md  = Get-Content -Raw -Encoding UTF8 $ChangelogPath
 
   # Find existing versions in the markdown
   $existing = @()
@@ -113,10 +116,21 @@ function Update-ChangelogFromLua {
       $heading = "**$catName**"
       $block += $heading + "`r`n"
       $itemsText = $c.Groups['items'].Value
-      $itemPattern = '"(?<item>[^"]*?)"\s*,?'
+      # Allow Lua-style escapes inside the string (\" \\ etc.). The previous
+      # naive `[^"]*?` pattern broke any entry containing an embedded \" by
+      # treating the escape as a string terminator, splitting one bullet
+      # into multiple mangled lines.
+      $itemPattern = '"(?<item>(?:\\.|[^"\\])*)"\s*,?'
       $items = [regex]::Matches($itemsText, $itemPattern)
       foreach ($it in $items) {
-        $item = $it.Groups['item'].Value.Trim()
+        $item = $it.Groups['item'].Value
+        # Unescape Lua's two common backslash escapes. Order matters: replace
+        # \\ first via a placeholder so its trailing slash can't combine with
+        # a following quote into a spurious \" unescape.
+        $item = $item -replace '\\\\', "`0BS`0"
+        $item = $item -replace '\\"', '"'
+        $item = $item -replace "`0BS`0", '\'
+        $item = $item.Trim()
         if ($item -ne '') { $block += '- ' + $item + "`r`n" }
       }
 

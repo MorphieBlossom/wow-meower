@@ -248,6 +248,87 @@ local function makeDropdown(parent, width, options, onSelect, getCurrent)
   return dd
 end
 
+-- Sound-picker variant of makeDropdown. Each option marked `playable = true`
+-- gets a small speaker button on the right edge of its row; clicking the
+-- speaker calls playFn(value) without changing selection (no menu close).
+-- Selection itself is still driven by the row's radio click. Same option /
+-- callback shape as makeDropdown plus the extra `playFn`.
+--
+-- Built on Blizzard's modern menu system (DropdownButton + SetupMenu): each
+-- CreateRadio returns a description proxy whose AddInitializer hook lets us
+-- attach a child Button to the row frame the framework builds. Without
+-- AddInitializer we'd have to reskin the dropdown template wholesale.
+local function makeSoundDropdown(parent, width, options, onSelect, getCurrent, playFn)
+  local dd = CreateFrame("DropdownButton", nil, parent, "WowStyle1DropdownTemplate")
+  dd:SetWidth(width)
+
+  local function labelFor(value)
+    for _, opt in ipairs(options) do
+      if opt.value == value then return opt.label or tostring(opt.value) end
+    end
+    return ""
+  end
+
+  dd:SetDefaultText(labelFor(getCurrent and getCurrent()))
+
+  dd:SetupMenu(function(_, rootDescription)
+    if rootDescription.SetScrollMode then
+      rootDescription:SetScrollMode(10 * 20)
+    end
+    for _, opt in ipairs(options) do
+      local value = opt.value
+      local function isSelected() return getCurrent and getCurrent() == value end
+      local function setSelected()
+        if onSelect then onSelect(value) end
+        if dd.GenerateMenu then dd:GenerateMenu() end
+        if dd.OverrideText then dd:OverrideText(labelFor(value)) end
+      end
+      local desc = rootDescription:CreateRadio(opt.label or tostring(value), isSelected, setSelected, value)
+
+      if opt.playable and playFn then
+        desc:AddInitializer(function(frame, description, menu)
+          -- Parent the button to the row frame so it inherits show/hide
+          -- with the menu and gets cleaned up on close. SetFrameLevel +1
+          -- so the speaker reliably captures clicks instead of the row.
+          local btn = CreateFrame("Button", nil, frame)
+          btn:SetSize(16, 16)
+          btn:SetPoint("RIGHT", frame, "RIGHT", -4, 0)
+          btn:SetFrameLevel(frame:GetFrameLevel() + 1)
+
+          local tex = btn:CreateTexture(nil, "ARTWORK")
+          tex:SetAllPoints()
+          -- Blizzard's built-in speaker icon. Same texture BigWigs uses
+          -- for its sound previews so the affordance reads consistently.
+          tex:SetTexture("Interface\\COMMON\\VoiceChat-Speaker")
+          tex:SetVertexColor(1, 0.82, 0) -- gold; matches our COLOR_HEADING
+
+          btn:SetScript("OnEnter", function() tex:SetVertexColor(1, 1, 1) end)
+          btn:SetScript("OnLeave", function() tex:SetVertexColor(1, 0.82, 0) end)
+          btn:RegisterForClicks("LeftButtonUp")
+          btn:SetScript("OnClick", function()
+            playFn(value)
+            -- No menu close: we don't call any selection setter and the
+            -- click was consumed by the button rather than the row.
+          end)
+
+          -- Reserve a bit of extra horizontal space on the row so the label
+          -- text doesn't overlap the speaker.
+          return frame:GetWidth(), nil
+        end)
+      end
+    end
+  end)
+
+  function dd:SyncLabel()
+    local v = getCurrent and getCurrent()
+    local label = labelFor(v)
+    if self.OverrideText then self:OverrideText(label) end
+    if self.GenerateMenu then self:GenerateMenu() end
+  end
+
+  return dd
+end
+
 -- Builds a clickable placeholder-doc row. Clicking opens MBLib's CopyPopup
 -- with the matching {key} token pre-filled. Hover lightens the text so the
 -- row reads as interactive.
@@ -326,7 +407,9 @@ local function describeWatcher(w)
   -- phrases can contain them). The FontString wraps to additional lines if
   -- the join overflows the row's info width.
   local triggerList  = w.triggers or {}
-  local triggerLabel = w.exact and L.LIST_ROW_FIELD_TRIGGER_EXACT or L.LIST_ROW_FIELD_TRIGGER
+  -- Per-phrase exactness isn't surfaced in the list row (too granular for a
+  -- one-line summary) — the editor exposes it.
+  local triggerLabel = L.LIST_ROW_FIELD_TRIGGER
   if #triggerList == 0 then
     table.insert(lines, labelled(triggerLabel, L.LIST_ROW_PLACEHOLDER_DASH))
   else
@@ -423,14 +506,49 @@ local function describeWatcher(w)
   -- FontString from collapsing the blank line.
   table.insert(lines, " ")
 
+  -- Notification cue + noReply gate, surfaced up top so a "sound only" watcher
+  -- doesn't look like it has nothing configured. When noReply is on, the reply
+  -- group below is suppressed in favor of a single "(no reply)" placeholder so
+  -- the row reflects what actually happens at fire time.
+  local notif       = w.notifications or {}
+  local sv          = notif.sound
+  local hasSound    = sv ~= nil
+    and sv ~= Constants.SOUND_NONE
+    and not (type(sv) == "string" and sv == "")
+  local noReplyMode = notif.noReply and true or false
+  if hasSound then
+    -- Resolve to a label: first the curated catalogue, otherwise the raw
+    -- value (FileDataID-encoded strings stripped to just the ID, LSM names
+    -- shown verbatim). Numbers not in the catalogue fall back to "Sound #ID".
+    local soundLabel
+    for _, s in ipairs(Constants.SOUNDS) do
+      if s.value == sv then soundLabel = s.label break end
+    end
+    if not soundLabel then
+      if type(sv) == "string" then
+        local fileID = sv:match("^file:(%d+)$")
+        soundLabel = fileID and ("Sound #" .. fileID) or sv
+      else
+        soundLabel = "Sound #" .. tostring(sv)
+      end
+    end
+    table.insert(lines, labelled(L.LIST_ROW_FIELD_NOTIFY_SOUND, soundLabel))
+  end
+
+  if noReplyMode then
+    table.insert(lines, labelled(L.LIST_ROW_FIELD_REPLY, colored(L.LIST_ROW_NOTIFY_NOREPLY_SUFFIX, COLOR_SOFT)))
+    return lines
+  end
+
   local replyTexts  = (w.reply and w.reply.texts)  or {}
   local replyEmotes = (w.reply and w.reply.emotes) or {}
   local hasText     = #replyTexts  > 0
   local hasEmote    = #replyEmotes > 0
 
   local actionList = {}
-  if w.reply and w.reply.invite then table.insert(actionList, "invite") end
-  if w.reply and w.reply.kick   then table.insert(actionList, "kick")   end
+  if w.reply and w.reply.invite      then table.insert(actionList, "group invite") end
+  if w.reply and w.reply.guildInvite then table.insert(actionList, "guild invite") end
+  if w.reply and w.reply.kick        then table.insert(actionList, "kick")         end
   local hasActions = #actionList > 0
 
   if hasText then
@@ -444,6 +562,9 @@ local function describeWatcher(w)
     if hasActions then table.insert(lines, SUB_INDENT .. labelled(L.LIST_ROW_FIELD_ACTIONS, table.concat(actionList, ", "))) end
   elseif hasActions then
     table.insert(lines, labelled(L.LIST_ROW_FIELD_ACTIONS, table.concat(actionList, ", ")))
+  elseif hasSound then
+    -- Pure-notification watcher (sound only, no reply config). Skip the dash
+    -- placeholder so the row doesn't read as "nothing configured".
   else
     table.insert(lines, labelled(L.LIST_ROW_FIELD_REPLY, L.LIST_ROW_PLACEHOLDER_DASH))
   end
@@ -477,7 +598,7 @@ local function buildListRow(content, watcher, yOffset, infoLines, height, minima
   -- Left edge cursor: shifts right as we lay out the expand button (when
   -- minimalistic), the status dot, then the name header.
   local EXPAND_BTN_WIDTH = 22
-  local DOT_SIZE         = 14
+  local DOT_SIZE         = 18
   local leftCursor = 0
 
   if minimalistic then
@@ -495,11 +616,12 @@ local function buildListRow(content, watcher, yOffset, infoLines, height, minima
     leftCursor = leftCursor + EXPAND_BTN_WIDTH + 6
   end
 
-  -- Status dot replaces the right-side ACTIVE/INACTIVE text badge. Frame
-  -- (with EnableMouse) wraps the texture so the tooltip fires on hover.
+  -- Status dot replaces the right-side ACTIVE/INACTIVE text badge. Button so
+  -- clicking it toggles the watcher's enabled state — duplicates the right-
+  -- side Activate/Deactivate button but gives a much larger, always-visible
+  -- hit target right next to the name.
   local dotLeft = leftCursor
-  local statusDot = CreateFrame("Frame", nil, row)
-  statusDot:EnableMouse(true)
+  local statusDot = CreateFrame("Button", nil, row)
   statusDot:SetSize(DOT_SIZE, DOT_SIZE)
   statusDot:SetPoint("TOPLEFT", dotLeft, -4)
   local dotTex = statusDot:CreateTexture(nil, "ARTWORK")
@@ -510,13 +632,66 @@ local function buildListRow(content, watcher, yOffset, infoLines, height, minima
   setTooltip(statusDot,
     watcher.enabled and L.LIST_ROW_STATUS_ACTIVE_TITLE or L.LIST_ROW_STATUS_INACTIVE_TITLE,
     watcher.enabled and L.LIST_ROW_STATUS_ACTIVE_DESC  or L.LIST_ROW_STATUS_INACTIVE_DESC)
+  statusDot:RegisterForClicks("LeftButtonUp")
+  statusDot:SetScript("OnClick", function()
+    addon.Watchers:SetEnabled(watcher.id, not watcher.enabled)
+    refreshList()
+  end)
   leftCursor = dotLeft + DOT_SIZE + 6
 
   local headerLeft = leftCursor
-  local header = row:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
-  header:SetPoint("TOPLEFT", headerLeft, 0)
+  -- Header is a Button so clicking the watcher name expands/collapses the
+  -- detail block (mirrors the +/- expand button visible in minimalistic
+  -- mode). The Activate/Deactivate toggle moved to the status dot to its
+  -- left. The hit-area extends all the way from the name to the Edit button
+  -- (anchored further down) so any blank space between the name and the
+  -- right-side buttons is also clickable. The FontString stays at the
+  -- LEFT, so the visible text doesn't drift even though the Button grows.
+  local headerBtn = CreateFrame("Button", nil, row)
+  headerBtn:SetPoint("TOPLEFT", headerLeft, 0)
+  headerBtn:SetHeight(LIST_HEADER_HEIGHT)
+  -- BOTTOMRIGHT is reattached to the Edit button after it's created below.
+
+  local header = headerBtn:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+  header:SetPoint("LEFT", headerBtn, "LEFT", 0, 0)
   local name = (watcher.name and watcher.name ~= "") and watcher.name or L.LIST_ROW_UNTITLED
-  header:SetText(colored(name, COLOR_NAME))
+  -- Plain text + SetTextColor (instead of colored() escape codes) so OnEnter
+  -- hover styling can override the color without re-templating the string.
+  header:SetText(name)
+  header:SetTextColor(COLOR_NAME.r, COLOR_NAME.g, COLOR_NAME.b)
+
+  headerBtn:RegisterForClicks("LeftButtonUp")
+  headerBtn:SetScript("OnClick", function()
+    -- Same effect as the +/- expand button (visible in minimalistic mode).
+    -- In non-minimalistic mode the flag has no visual effect but it's still
+    -- safe to flip — the state is harmless and persists for when the user
+    -- switches to minimalistic.
+    Panel._expanded[watcher.id] = not Panel._expanded[watcher.id]
+    refreshList()
+  end)
+  headerBtn:SetScript("OnEnter", function()
+    header:SetTextColor(1, 1, 1) -- white on hover, signals interactivity
+  end)
+  headerBtn:SetScript("OnLeave", function()
+    header:SetTextColor(COLOR_NAME.r, COLOR_NAME.g, COLOR_NAME.b)
+  end)
+
+  -- Sound indicator: small speaker icon right of the name when the watcher
+  -- has a notification sound configured. Matches the polymorphic sound
+  -- value shape (kit ID / file:/lsm:) used everywhere else.
+  local sv = watcher.notifications and watcher.notifications.sound
+  local hasSound = sv ~= nil
+    and sv ~= Constants.SOUND_NONE
+    and not (type(sv) == "string" and sv == "")
+  if hasSound then
+    local icon = row:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(16, 16)
+    icon:SetPoint("LEFT", header, "RIGHT", 6, 0)
+    -- VoiceChat-On is the speaker-with-soundwaves variant, reading as
+    -- "audio enabled" — more legible at small sizes than the bare speaker.
+    icon:SetTexture("Interface\\COMMON\\VoiceChat-On")
+    icon:SetVertexColor(1, 0.82, 0) -- gold, matches COLOR_NAME / accents
+  end
 
   if infoLines then
     -- Info text indents to the second slot from the left so it reads as
@@ -542,21 +717,19 @@ local function buildListRow(content, watcher, yOffset, infoLines, height, minima
     end)
   end
 
-  local toggleBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-  toggleBtn:SetSize(95, 22)
-  toggleBtn:SetPoint("TOPRIGHT", -180, -2)
-  toggleBtn:SetText(watcher.enabled and L.LIST_ROW_DEACTIVATE_BTN or L.LIST_ROW_ACTIVATE_BTN)
-  toggleBtn:SetScript("OnClick", function()
-    addon.Watchers:SetEnabled(watcher.id, not watcher.enabled)
-    refreshList()
-  end)
-  setTooltip(toggleBtn,
-    watcher.enabled and L.LIST_ROW_TOGGLE_ACTIVE_TOOLTIP_TITLE or L.LIST_ROW_TOGGLE_INACTIVE_TOOLTIP_TITLE,
-    watcher.enabled and L.LIST_ROW_TOGGLE_ACTIVE_TOOLTIP_DESC  or L.LIST_ROW_TOGGLE_INACTIVE_TOOLTIP_DESC)
-
+  -- Activate/Deactivate button retired — the status dot to the left of the
+  -- name is now the toggle affordance (clickable, with a tooltip explaining
+  -- the action). Edit + Delete remain on the right; the -109 keeps roughly
+  -- the same right margin (~38 px) as the pre-removal layout so the pair
+  -- doesn't crowd the panel edge.
   local editBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
   editBtn:SetSize(65, 22)
-  editBtn:SetPoint("LEFT", toggleBtn, "RIGHT", 6, 0)
+  editBtn:SetPoint("TOPRIGHT", -109, -2)
+
+  -- Now that the Edit button exists, finish anchoring the header hit-area:
+  -- its right edge meets the Edit button's left, with a small gap so a
+  -- careless click near Edit doesn't accidentally toggle expansion.
+  headerBtn:SetPoint("BOTTOMRIGHT", editBtn, "BOTTOMLEFT", -8, 0)
   editBtn:SetText(L.LIST_ROW_EDIT_BTN)
   editBtn:SetScript("OnClick", function() enterEdit(watcher.id) end)
   setTooltip(editBtn, L.LIST_ROW_EDIT_TOOLTIP_TITLE, L.LIST_ROW_EDIT_TOOLTIP_DESC)
@@ -708,25 +881,29 @@ end
 function Panel:setEditTab(tab)
   local f = Panel._editFrame
   if not f then return end
-  if tab ~= "trigger" and tab ~= "reply" then tab = "trigger" end
+  if tab ~= "trigger" and tab ~= "reply" and tab ~= "notify" then tab = "trigger" end
   Panel.editTab = tab
 
-  if f.triggerPanel and f.replyPanel then
+  if f.triggerPanel and f.replyPanel and f.notifyPanel then
     f.triggerPanel:SetShown(tab == "trigger")
     f.replyPanel:SetShown(tab == "reply")
+    f.notifyPanel:SetShown(tab == "notify")
   end
 
   -- Visual state on the tab buttons. PanelTopTabButtonTemplate has its
   -- own selected/unselected texture treatment — Select hides the body
   -- texture so the tab visually merges with the content below; Deselect
   -- restores the lighter, raised look.
-  if f.triggerTabBtn and f.replyTabBtn then
+  if f.triggerTabBtn and f.replyTabBtn and f.notifyTabBtn then
+    PanelTemplates_DeselectTab(f.triggerTabBtn)
+    PanelTemplates_DeselectTab(f.replyTabBtn)
+    PanelTemplates_DeselectTab(f.notifyTabBtn)
     if tab == "trigger" then
       PanelTemplates_SelectTab(f.triggerTabBtn)
-      PanelTemplates_DeselectTab(f.replyTabBtn)
-    else
-      PanelTemplates_DeselectTab(f.triggerTabBtn)
+    elseif tab == "reply" then
       PanelTemplates_SelectTab(f.replyTabBtn)
+    else
+      PanelTemplates_SelectTab(f.notifyTabBtn)
     end
   end
 
@@ -824,8 +1001,15 @@ local function buildEditForm(parent)
   replyTabBtn:SetPoint("LEFT", triggerTabBtn, "RIGHT", -3, 0)
   replyTabBtn:SetScript("OnClick", function() Panel:setEditTab("reply") end)
 
+  local notifyTabBtn = CreateFrame("Button", nil, topBar, "PanelTopTabButtonTemplate")
+  notifyTabBtn:SetID(3)
+  notifyTabBtn:SetText(L.EDIT_TAB_NOTIFY)
+  notifyTabBtn:SetPoint("LEFT", replyTabBtn, "RIGHT", -3, 0)
+  notifyTabBtn:SetScript("OnClick", function() Panel:setEditTab("notify") end)
+
   frame.triggerTabBtn = triggerTabBtn
   frame.replyTabBtn   = replyTabBtn
+  frame.notifyTabBtn  = notifyTabBtn
 
   -- ----- Scrollable content -----
   local scrollFrame = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
@@ -858,43 +1042,112 @@ local function buildEditForm(parent)
   replyPanel:Hide() -- default to the trigger tab; enterEdit re-asserts this
   frame.replyPanel = replyPanel
 
-  -- ===== TRIGGER section (lives on triggerPanel) =====
-  -- White, standard-size lead-in describing what this tab configures.
-  -- GameFontHighlight ships white-on-default at a slightly larger size
-  -- than the muted GameFontHighlightSmall used for hints elsewhere.
+  local notifyPanel = CreateFrame("Frame", nil, content)
+  notifyPanel:SetPoint("TOPLEFT",  content, "TOPLEFT",  0, 0)
+  notifyPanel:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, 0)
+  notifyPanel:SetHeight(1)
+  notifyPanel:Hide()
+  frame.notifyPanel = notifyPanel
+
+  -- ===== TRIGGER tab (lives on triggerPanel) =====
+  -- Sections separated by full-width rules. Each section: large gold header
+  -- + muted description + controls. The tab description sits at the top.
   local triggerDesc = makeLabel(triggerPanel, L.EDIT_TRIGGER_DESC, "GameFontHighlight")
   triggerDesc:SetPoint("TOPLEFT", triggerPanel, "TOPLEFT", LEFT_MARGIN, -10)
   triggerDesc:SetWidth(INNER_WIDTH)
   triggerDesc:SetJustifyH("LEFT")
 
-  -- Name
-  local nameLabel = makeLabel(triggerPanel, L.EDIT_NAME_LABEL)
-  nameLabel:SetPoint("TOPLEFT", triggerDesc, "BOTTOMLEFT", 0, -24)
+  -- ----- Name section -----
+  local nameSep = makeFullSeparator(triggerPanel, triggerDesc, -16)
+
+  local nameHeader = makeHeader(triggerPanel, L.EDIT_NAME_LABEL)
+  nameHeader:SetPoint("LEFT", triggerPanel, "LEFT", LEFT_MARGIN, 0)
+  nameHeader:SetPoint("TOP",  nameSep, "BOTTOM", 0, -10)
+
+  local nameDesc = makeMutedLabel(triggerPanel, L.EDIT_NAME_DESC)
+  nameDesc:SetPoint("TOPLEFT", nameHeader, "BOTTOMLEFT", 0, -4)
+  nameDesc:SetWidth(INNER_WIDTH)
+  nameDesc:SetJustifyH("LEFT")
+
   local nameInput = makeInput(triggerPanel, INNER_WIDTH)
-  nameInput:SetPoint("TOPLEFT", nameLabel, "BOTTOMLEFT", 6, -6)
+  nameInput:SetPoint("TOPLEFT", nameDesc, "BOTTOMLEFT", 0, -8)
   nameInput:SetScript("OnTextChanged", function(self)
     if Panel.state then Panel.state.name = self:GetText() or "" end
+    -- Live-update the edit-form's top-bar title so it tracks the name input.
+    if not Panel._isNewWatcher and Panel._updateEditHeader then
+      Panel._updateEditHeader(false)
+    end
     Panel:updateSaveButton()
   end)
   frame.nameInput = nameInput
 
-  -- Trigger phrases. One phrase per dynamic input row so a phrase can contain
-  -- a comma (no CSV splitting). Rows are rebuilt by rebuildTriggerInputs()
-  -- whenever the trigger list changes; +Add appends a new empty row, the
-  -- per-row X removes that row. The X is hidden whenever there's only one row
-  -- so there's always something to type into.
-  local trigLabel = makeLabel(triggerPanel, L.EDIT_PHRASES_LABEL)
-  trigLabel:SetPoint("TOPLEFT", nameInput, "BOTTOMLEFT", -6, -16)
+  -- ----- Trigger phrases section -----
+  -- One phrase per dynamic input row so a phrase can contain a comma (no CSV
+  -- splitting). Rows are rebuilt by rebuildTriggerInputs() whenever the
+  -- trigger list changes; +Add appends a new empty row, the per-row X removes
+  -- that row. Each row also carries its own "Case sensitive" and "Exact
+  -- match" toggles (per-trigger) directly beneath the input.
+  local trigSep = makeFullSeparator(triggerPanel, nameInput, -18)
+
+  local trigHeader = makeHeader(triggerPanel, L.EDIT_PHRASES_LABEL)
+  trigHeader:SetPoint("LEFT", triggerPanel, "LEFT", LEFT_MARGIN, 0)
+  trigHeader:SetPoint("TOP",  trigSep, "BOTTOM", 0, -10)
+
   local trigDesc = makeMutedLabel(triggerPanel, L.EDIT_PHRASES_DESC)
-  trigDesc:SetPoint("TOPLEFT", trigLabel, "BOTTOMLEFT", 0, -2)
+  trigDesc:SetPoint("TOPLEFT", trigHeader, "BOTTOMLEFT", 0, -4)
   trigDesc:SetWidth(INNER_WIDTH)
   trigDesc:SetJustifyH("LEFT")
 
-  -- trigArea is a positional anchor for the first row only; the chain
-  -- (rows -> trigAddBtn -> exactCheck) reflows automatically as rows are
-  -- added or removed because each link anchors to the previous one.
+  -- Column layout for the grid of trigger rows. The X (remove) button sits
+  -- right after the input — they belong together as "this row" — while the
+  -- modifier checkboxes (Case sensitive, Exact match) are pushed all the
+  -- way to the panel's right edge. All per-row widgets and the column
+  -- header labels share these positions so the headers line up with the
+  -- column they describe.
+  local TRIG_PHRASE_W   = 410                   -- input width
+  local TRIG_REMOVE_X   = TRIG_PHRASE_W + 8     -- left edge of X, snug against input
+  local TRIG_EXACT_X    = INNER_WIDTH - 10      -- left edge of the exact-match checkbox
+  local TRIG_CASE_X     = TRIG_EXACT_X - 64     -- left edge of the case-sensitive checkbox
+  local TRIG_CB_VIS_W   = 24                   -- approximate visible checkbox width
+  frame.trigCols = {
+    phraseW  = TRIG_PHRASE_W,
+    caseX    = TRIG_CASE_X,
+    exactX   = TRIG_EXACT_X,
+    removeX  = TRIG_REMOVE_X,
+  }
+
+  -- Column header row sits above the first input. Small font, centered over
+  -- each column. The checkbox labels wrap to two lines (literal "\n" in the
+  -- string) so they fit the column width without bleeding sideways.
+  local trigColHeader = CreateFrame("Frame", nil, triggerPanel)
+  trigColHeader:SetPoint("TOPLEFT", trigDesc, "BOTTOMLEFT", 0, -8)
+  trigColHeader:SetHeight(28)
+  trigColHeader:SetWidth(TRIG_REMOVE_X + 30)
+
+  -- The InputBoxTemplate's Left texture overhangs the frame by ~5 px, so
+  -- the input's *visible* left sits a few pixels left of its frame's LEFT.
+  -- Nudge the Phrase header left to line up with that visible edge — the
+  -- column header now reads as a column over the input, not floating
+  -- between it and the +Add phrase button below.
+  local phraseColLabel = trigColHeader:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  phraseColLabel:SetPoint("LEFT", trigColHeader, "LEFT", -5, 0)
+  phraseColLabel:SetText(L.EDIT_PHRASES_COL_PHRASE)
+
+  local function makeColLabel(x, text)
+    local fs = trigColHeader:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    fs:SetPoint("LEFT", trigColHeader, "LEFT", x + TRIG_CB_VIS_W / 2 - 35, 0)
+    fs:SetSize(70, 28)
+    fs:SetJustifyH("CENTER")
+    fs:SetJustifyV("MIDDLE")
+    fs:SetSpacing(1)
+    fs:SetText(text)
+    return fs
+  end
+  makeColLabel(TRIG_CASE_X,  L.EDIT_PHRASES_COL_CASE)
+  makeColLabel(TRIG_EXACT_X, L.EDIT_PHRASES_COL_EXACT)
+
   local trigArea = CreateFrame("Frame", nil, triggerPanel)
-  trigArea:SetPoint("TOPLEFT", trigDesc, "BOTTOMLEFT", 6, -6)
+  trigArea:SetPoint("TOPLEFT", trigColHeader, "BOTTOMLEFT", 0, -4)
   trigArea:SetSize(1, 1)
   frame.trigArea = trigArea
   frame.trigRows = {}
@@ -910,29 +1163,20 @@ local function buildEditForm(parent)
   end)
   frame.trigAddBtn = trigAddBtn
 
-  -- Exact match: when checked, the whole message must equal a trigger phrase
-  -- (still case-insensitive). When unchecked, the phrase only needs to appear
-  -- as a whole word somewhere in the message — the historical behavior.
-  local exactCheck = makeCheckbox(triggerPanel, L.EDIT_EXACT_LABEL)
-  exactCheck:SetPoint("TOPLEFT", trigAddBtn, "BOTTOMLEFT", -6, -10)
-  exactCheck:SetScript("OnClick", function(self)
-    if Panel.state then
-      Panel.state.exact = self:GetChecked() and true or false
-      Panel:updateSaveButton()
-    end
-  end)
-  frame.exactCheck = exactCheck
-
-  inlineDesc(triggerPanel, exactCheck, L.EDIT_EXACT_DESC)
-
-  -- Channels grid: w/b/s/e on the left, p/r/i on the right, "Only when
+  -- ----- Channels section -----
+  -- 2-column grid: w/b/s/e/(em) on the left, p/r/i on the right, "Only when
   -- leader/assist" tucked into the right column at row 4 so it sits next to
   -- the group channels (p/r/i) it actually gates.
-  local chLabel = makeLabel(triggerPanel, L.EDIT_CHANNELS_LABEL)
-  -- Anchor to exactCheck rather than the (now inline) description so we don't
-  -- pull chLabel up into the description's TOPLEFT when wrap is short. The
-  -- extra -22 gap absorbs up to 2 lines of wrapped description text.
-  chLabel:SetPoint("TOPLEFT", exactCheck, "BOTTOMLEFT", 0, -22)
+  local chSep = makeFullSeparator(triggerPanel, trigAddBtn, -18)
+
+  local chHeader = makeHeader(triggerPanel, L.EDIT_CHANNELS_LABEL)
+  chHeader:SetPoint("LEFT", triggerPanel, "LEFT", LEFT_MARGIN, 0)
+  chHeader:SetPoint("TOP",  chSep, "BOTTOM", 0, -10)
+
+  local chDesc = makeMutedLabel(triggerPanel, L.EDIT_CHANNELS_DESC)
+  chDesc:SetPoint("TOPLEFT", chHeader, "BOTTOMLEFT", 0, -4)
+  chDesc:SetWidth(INNER_WIDTH)
+  chDesc:SetJustifyH("LEFT")
 
   local CHANNEL_LAYOUT = {
     { def = Constants.CHANNELS.WHISPER,  col = 0, row = 0 },
@@ -953,7 +1197,7 @@ local function buildEditForm(parent)
 
   local grid = CreateFrame("Frame", nil, triggerPanel)
   grid:SetSize(INNER_WIDTH, GRID_ROWS * rowHeight)
-  grid:SetPoint("TOPLEFT", chLabel, "BOTTOMLEFT", 6, -4)
+  grid:SetPoint("TOPLEFT", chDesc, "BOTTOMLEFT", 0, -8)
   frame.grid = grid -- exposed so the FILTERS section can anchor its header below it
 
   local channelChecks = {}
@@ -985,19 +1229,24 @@ local function buildEditForm(parent)
   end)
   frame.leaderCheck = leaderCheck
 
-  -- ===== REPLY section (lives on replyPanel) =====
-  -- White, standard-size lead-in — same styling as triggerDesc on the
-  -- other tab so the two tabs read as visual peers.
+  -- ===== REPLY tab (lives on replyPanel) =====
+  -- Same section pattern as the Trigger tab: tab description, then sections
+  -- separated by full-width rules. Each section: large gold header + muted
+  -- description + controls.
   local replyDesc = makeLabel(replyPanel, L.EDIT_REPLY_DESC, "GameFontHighlight")
   replyDesc:SetPoint("TOPLEFT", replyPanel, "TOPLEFT", LEFT_MARGIN, -10)
   replyDesc:SetWidth(INNER_WIDTH)
   replyDesc:SetJustifyH("LEFT")
 
-  -- ----- Multi-row reply text (LEFT column) -----
-  local replyLabel = makeLabel(replyPanel, L.EDIT_REPLY_TEXT_LABEL)
-  replyLabel:SetPoint("TOPLEFT", replyDesc, "BOTTOMLEFT", 0, -24)
+  -- ----- Text reply section -----
+  local replyTextSep = makeFullSeparator(replyPanel, replyDesc, -16)
+
+  local replyLabel = makeHeader(replyPanel, L.EDIT_REPLY_TEXT_LABEL)
+  replyLabel:SetPoint("LEFT", replyPanel, "LEFT", LEFT_MARGIN, 0)
+  replyLabel:SetPoint("TOP",  replyTextSep, "BOTTOM", 0, -10)
+
   local replyDescText = makeMutedLabel(replyPanel, L.EDIT_REPLY_TEXT_DESC)
-  replyDescText:SetPoint("TOPLEFT", replyLabel, "BOTTOMLEFT", 0, -2)
+  replyDescText:SetPoint("TOPLEFT", replyLabel, "BOTTOMLEFT", 0, -4)
   -- Narrower than the trigger-tab descriptions because the right column
   -- (the "Reply in" dropdown) eats into the panel's horizontal budget.
   replyDescText:SetWidth(REPLY_LEFT_COL_WIDTH)
@@ -1008,7 +1257,7 @@ local function buildEditForm(parent)
   -- frame that the rebuild repositions to sit right below the +Add button,
   -- so anything anchored to it (placeholders / notes) reflows automatically.
   local replyArea = CreateFrame("Frame", nil, replyPanel)
-  replyArea:SetPoint("TOPLEFT", replyDescText, "BOTTOMLEFT", 6, -6)
+  replyArea:SetPoint("TOPLEFT", replyDescText, "BOTTOMLEFT", 0, -6)
   replyArea:SetSize(1, 1)
   frame.replyArea = replyArea
   frame.replyRows = {}
@@ -1056,7 +1305,7 @@ local function buildEditForm(parent)
 
   -- Placeholder docs (one line per placeholder)
   local placeholderHeader = makeLabel(replyPanel, L.EDIT_PLACEHOLDERS_HEADER, "GameFontHighlight")
-  placeholderHeader:SetPoint("TOPLEFT", replyBlockBottom, "BOTTOMLEFT", -6, -8)
+  placeholderHeader:SetPoint("TOPLEFT", replyBlockBottom, "BOTTOMLEFT", 0, -8)
 
   local placeholderDesc = makeMutedLabel(replyPanel, L.EDIT_PLACEHOLDERS_DESC)
   placeholderDesc:SetPoint("TOPLEFT", placeholderHeader, "BOTTOMLEFT", 0, -4)
@@ -1082,16 +1331,20 @@ local function buildEditForm(parent)
   noteEmoteLine:SetWidth(INNER_WIDTH)
   noteEmoteLine:SetJustifyH("LEFT")
 
-  -- ----- Multi-row reply emote -----
+  -- ----- Emote reply section -----
   -- emoteOptions is shared across all dropdown rows. Each row builds its own
   -- DropdownButton but reuses this option list to avoid copying 250+ entries
   -- per row. The "(none)" sentinel sits at the top so the first row reads as
   -- "no emote yet" by default — saveEdit drops EMOTE_NONE entries before
   -- persisting, mirroring how empty reply-text rows are dropped.
-  local emoteLabel = makeLabel(replyPanel, L.EDIT_REPLY_EMOTE_LABEL)
-  emoteLabel:SetPoint("TOPLEFT", noteEmoteLine, "BOTTOMLEFT", 0, -28)
+  local emoteSep = makeFullSeparator(replyPanel, noteEmoteLine, -18)
+
+  local emoteLabel = makeHeader(replyPanel, L.EDIT_REPLY_EMOTE_LABEL)
+  emoteLabel:SetPoint("LEFT", replyPanel, "LEFT", LEFT_MARGIN, 0)
+  emoteLabel:SetPoint("TOP",  emoteSep, "BOTTOM", 0, -10)
+
   local emoteDescText = makeMutedLabel(replyPanel, L.EDIT_REPLY_EMOTE_DESC)
-  emoteDescText:SetPoint("TOPLEFT", emoteLabel, "BOTTOMLEFT", 0, -2)
+  emoteDescText:SetPoint("TOPLEFT", emoteLabel, "BOTTOMLEFT", 0, -4)
   emoteDescText:SetWidth(INNER_WIDTH)
   emoteDescText:SetJustifyH("LEFT")
 
@@ -1151,22 +1404,35 @@ local function buildEditForm(parent)
   end)
   frame.emoteFirstCheck = emoteFirstCheck
 
-  -- ----- Actions subsection (lives inside Reply; no separator above) -----
-  -- Anchored to emoteBlockBottom (which sits just below +Add emote) rather
-  -- than emoteFirstCheck — the checkbox is now inline with +Add and may be
-  -- hidden, so anchoring to it left an inconsistent vertical gap. The -28
-  -- matches the gap above "Reply with standard emote" so the section spacing
-  -- reads as even.
-  local actionsHeader = makeLabel(replyPanel, L.EDIT_ACTIONS_LABEL)
-  actionsHeader:SetPoint("LEFT", replyPanel, "LEFT", LEFT_MARGIN, 0)
-  actionsHeader:SetPoint("TOP",  emoteBlockBottom, "BOTTOM", 0, -28)
+  -- ----- Actions to do section -----
+  -- Each action is a checkbox with its description on the line BELOW (full
+  -- width muted label) rather than inline to the right of the label. Reads
+  -- more naturally when descriptions wrap to multiple lines.
+  local actionsSep = makeFullSeparator(replyPanel, emoteBlockBottom, -18)
 
-  -- Invite block. Descriptions sit at +30 to align under their checkbox label.
-  -- The "Confirm" and "Queue" sub-checkboxes are intentionally indented +20
-  -- past their parent "Invite sender" so it reads as a sub-group. The kick
-  -- block (further down) compensates via the afterInvite anchor offset.
+  local actionsHeader = makeHeader(replyPanel, L.EDIT_ACTIONS_LABEL)
+  actionsHeader:SetPoint("LEFT", replyPanel, "LEFT", LEFT_MARGIN, 0)
+  actionsHeader:SetPoint("TOP",  actionsSep, "BOTTOM", 0, -10)
+
+  local actionsDesc = makeMutedLabel(replyPanel, L.EDIT_ACTIONS_DESC)
+  actionsDesc:SetPoint("TOPLEFT", actionsHeader, "BOTTOMLEFT", 0, -4)
+  actionsDesc:SetWidth(INNER_WIDTH)
+  actionsDesc:SetJustifyH("LEFT")
+
+  -- Helper: anchors a full-width muted description directly below a
+  -- checkbox. Returns the description so callers can show/hide it together
+  -- with the checkbox in the invite-cascade logic.
+  local function descBelow(check, text, leftIndent)
+    local d = makeMutedLabel(replyPanel, text)
+    d:SetPoint("TOPLEFT", check, "BOTTOMLEFT", leftIndent or 24, -2)
+    d:SetPoint("RIGHT",   replyPanel, "RIGHT", -20, 0)
+    d:SetJustifyH("LEFT")
+    return d
+  end
+
+  -- Group invite block (party / raid).
   local inviteCheck = makeCheckbox(replyPanel, L.EDIT_INVITE_LABEL)
-  inviteCheck:SetPoint("TOPLEFT", actionsHeader, "BOTTOMLEFT", 0, -8)
+  inviteCheck:SetPoint("TOPLEFT", actionsDesc, "BOTTOMLEFT", 0, -10)
   inviteCheck:SetScript("OnClick", function(self)
     if Panel.state then
       Panel.state.reply.invite = self:GetChecked() and true or false
@@ -1174,15 +1440,12 @@ local function buildEditForm(parent)
     end
   end)
   frame.inviteCheck = inviteCheck
+  frame.inviteDesc  = descBelow(inviteCheck, L.EDIT_INVITE_DESC)
 
-  inlineDesc(replyPanel, inviteCheck, L.EDIT_INVITE_DESC)
-
-  -- Sub-rows live at +20 indent from the parent ("Invite sender") to read as
-  -- a sub-group. The -4 gap is tight on purpose so the Confirm/Queue pair
-  -- reads as one cluster under Invite; 2-line wrapped descriptions on the
-  -- parent row may brush very close but shouldn't overlap given current text.
+  -- Sub-rows live at +20 indent from the parent "Group invite" to read as a
+  -- sub-group. Each sub-row also gets a description on the line below it.
   local inviteConfirmCheck = makeCheckbox(replyPanel, L.EDIT_INVITE_CONFIRM_LABEL)
-  inviteConfirmCheck:SetPoint("TOPLEFT", inviteCheck, "BOTTOMLEFT", 20, -4)
+  inviteConfirmCheck:SetPoint("TOPLEFT", frame.inviteDesc, "BOTTOMLEFT", 20, -6)
   inviteConfirmCheck:SetScript("OnClick", function(self)
     if Panel.state then
       Panel.state.reply.inviteConfirm = self:GetChecked() and true or false
@@ -1190,30 +1453,54 @@ local function buildEditForm(parent)
     end
   end)
   frame.inviteConfirmCheck = inviteConfirmCheck
-  frame.inviteConfirmDesc  = inlineDesc(replyPanel, inviteConfirmCheck, L.EDIT_INVITE_CONFIRM_DESC)
+  frame.inviteConfirmDesc  = descBelow(inviteConfirmCheck, L.EDIT_INVITE_CONFIRM_DESC)
 
   local inviteQueueCheck = makeCheckbox(replyPanel, L.EDIT_INVITE_QUEUE_LABEL)
-  inviteQueueCheck:SetPoint("TOPLEFT", inviteConfirmCheck, "BOTTOMLEFT", 0, -4)
+  -- inviteConfirmDesc sits at +24 from inviteConfirmCheck (descBelow's
+  -- default left indent); walk back -24 so the Queue checkbox lines up
+  -- horizontally with "Confirm before inviting" above it.
+  inviteQueueCheck:SetPoint("TOPLEFT", frame.inviteConfirmDesc, "BOTTOMLEFT", -24, -6)
   inviteQueueCheck:SetScript("OnClick", function(self)
     if Panel.state then Panel.state.reply.inviteQueue = self:GetChecked() and true or false end
   end)
   frame.inviteQueueCheck = inviteQueueCheck
-  frame.inviteQueueDesc  = inlineDesc(replyPanel, inviteQueueCheck, L.EDIT_INVITE_QUEUE_DESC)
+  frame.inviteQueueDesc  = descBelow(inviteQueueCheck, L.EDIT_INVITE_QUEUE_DESC)
 
-  -- Anchor for the kick block - collapses up to inviteCheck when the invite
-  -- sub-tree is hidden, so the kick row doesn't float in empty space. The
-  -- block top/bottom references now point at the checkboxes themselves
-  -- (descriptions are inline on the right side and would resolve to the
-  -- wrong vertical bottom if anchored to).
+  -- Anchor for the guild-invite + kick blocks - collapses up when the invite
+  -- sub-tree is hidden so downstream rows don't float in empty space. The
+  -- block bottom now points at the bottom description (descriptions are
+  -- below-the-checkbox in this layout, not inline).
   local afterInvite = CreateFrame("Frame", nil, replyPanel)
   afterInvite:SetSize(1, 1)
   frame.afterInvite       = afterInvite
-  frame.inviteBlockBottom = inviteQueueCheck
-  frame.inviteBlockTop    = inviteCheck
+  frame.inviteBlockBottom = frame.inviteQueueDesc
+  frame.inviteBlockTop    = frame.inviteDesc
+
+  -- Guild invite block. Sibling action to the party invite above — separate
+  -- because guild invite has different gating (IsInGuild + CanGuildInvite)
+  -- and a different runtime path (C_GuildInfo.Invite, not party invite).
+  -- Hidden when the player isn't in a guild; refreshEditForm syncs that
+  -- state on every redraw so joining/leaving updates the UI.
+  local guildInviteCheck = makeCheckbox(replyPanel, L.EDIT_GUILD_INVITE_LABEL)
+  guildInviteCheck:SetPoint("TOPLEFT", afterInvite, "BOTTOMLEFT", 0, 0)
+  guildInviteCheck:SetScript("OnClick", function(self)
+    if Panel.state then
+      Panel.state.reply.guildInvite = self:GetChecked() and true or false
+      refreshEditForm()
+    end
+  end)
+  frame.guildInviteCheck = guildInviteCheck
+  frame.guildInviteDesc  = descBelow(guildInviteCheck, L.EDIT_GUILD_INVITE_DESC)
+
+  -- afterGuildInvite anchors the Kick block; collapses up when guild invite
+  -- is hidden (e.g. player not in a guild).
+  local afterGuildInvite = CreateFrame("Frame", nil, replyPanel)
+  afterGuildInvite:SetSize(1, 1)
+  frame.afterGuildInvite = afterGuildInvite
 
   -- Kick block
   local kickCheck = makeCheckbox(replyPanel, L.EDIT_KICK_LABEL)
-  kickCheck:SetPoint("TOPLEFT", afterInvite, "BOTTOMLEFT", 0, 0)
+  kickCheck:SetPoint("TOPLEFT", afterGuildInvite, "BOTTOMLEFT", 0, 0)
   kickCheck:SetScript("OnClick", function(self)
     if Panel.state then
       Panel.state.reply.kick = self:GetChecked() and true or false
@@ -1222,26 +1509,25 @@ local function buildEditForm(parent)
   end)
   frame.kickCheck = kickCheck
 
-  frame.kickBlockBottom = inlineDesc(replyPanel, kickCheck, L.EDIT_KICK_DESC)
+  frame.kickBlockBottom = descBelow(kickCheck, L.EDIT_KICK_DESC)
 
   -- ===== FILTERS section (lives on triggerPanel) =====
   -- Filters gate WHEN the trigger fires, so they belong with the trigger
   -- group, not the reply. Optional gates layered on top of the channel +
   -- trigger match — each filter has a checkbox that reveals its editor,
   -- shown/hidden in refreshEditForm. Off filters don't enforce anything.
+  -- Separator ABOVE the section header (matches the rest of the tab's
+  -- section pattern). The -18 absorbs the bottom padding of the channels grid.
+  local filtersSep = makeFullSeparator(triggerPanel, grid, -18)
+
   local filtersHeader = makeHeader(triggerPanel, L.EDIT_FILTERS_HEADER)
   filtersHeader:SetPoint("LEFT", triggerPanel, "LEFT", LEFT_MARGIN, 0)
-  -- Anchored below the channels grid (the last widget in the trigger
-  -- subsection) with a generous gap to absorb the channel grid's bottom
-  -- padding.
-  filtersHeader:SetPoint("TOP",  grid, "BOTTOM", 0, -18)
+  filtersHeader:SetPoint("TOP",  filtersSep, "BOTTOM", 0, -10)
 
   local filtersDesc = makeMutedLabel(triggerPanel, L.EDIT_FILTERS_DESC)
   filtersDesc:SetPoint("TOPLEFT", filtersHeader, "BOTTOMLEFT", 0, -4)
   filtersDesc:SetWidth(INNER_WIDTH)
   filtersDesc:SetJustifyH("LEFT")
-
-  local filtersSep = makeFullSeparator(triggerPanel, filtersDesc, -8)
 
   -- buildFilterBlock factors the "checkbox + revealable editor" pattern. It
   -- returns the editor frame (caller anchors it to the toggle and populates
@@ -1272,7 +1558,9 @@ local function buildEditForm(parent)
   end
 
   frame.filterBlocks = {}
-  local lastFilterBottom = filtersSep
+  -- First filter block chains off the section's description; later blocks
+  -- chain off each previous block's bottomAnchor in turn.
+  local lastFilterBottom = filtersDesc
 
   -- ----- Zone filter -----
   local zoneBlock = buildFilterBlock(lastFilterBottom, L.EDIT_FILTER_ZONE_LABEL, "zone")
@@ -1555,6 +1843,178 @@ local function buildEditForm(parent)
   table.insert(frame.filterBlocks, cdBlock)
   lastFilterBottom = cdBlock.bottomAnchor
 
+  -- ===== NOTIFICATIONS section (lives on notifyPanel) =====
+  -- Layout follows the shared section pattern: tab description at top, then
+  -- sections separated by full-width rules. Each section has a large gold
+  -- header + a muted description + its controls. The "No reply needed"
+  -- toggle is pinned at the top (under the tab description) as a quick
+  -- access switch — promoting it visually since it changes runtime behavior
+  -- significantly.
+  local notifyDesc = makeLabel(notifyPanel, L.EDIT_NOTIFY_DESC, "GameFontHighlight")
+  notifyDesc:SetPoint("TOPLEFT", notifyPanel, "TOPLEFT", LEFT_MARGIN, -10)
+  notifyDesc:SetWidth(INNER_WIDTH)
+  notifyDesc:SetJustifyH("LEFT")
+
+  -- ----- No reply needed (top-of-tab quick toggle) -----
+  local noReplyCheck = makeCheckbox(notifyPanel, L.EDIT_NOTIFY_NOREPLY_LABEL)
+  noReplyCheck:SetPoint("TOPLEFT", notifyDesc, "BOTTOMLEFT", 0, -16)
+  noReplyCheck:SetScript("OnClick", function(self)
+    if Panel.state and Panel.state.notifications then
+      Panel.state.notifications.noReply = self:GetChecked() and true or false
+      Panel:updateSaveButton()
+    end
+  end)
+  frame.notifyNoReplyCheck = noReplyCheck
+
+  local noReplyDesc = makeMutedLabel(notifyPanel, L.EDIT_NOTIFY_NOREPLY_DESC)
+  noReplyDesc:SetPoint("TOPLEFT", noReplyCheck, "BOTTOMLEFT", 0, -4)
+  noReplyDesc:SetWidth(INNER_WIDTH)
+  noReplyDesc:SetJustifyH("LEFT")
+
+  -- ----- Sound section -----
+  local soundSep = makeFullSeparator(notifyPanel, noReplyDesc, -16)
+
+  local soundHeader = makeHeader(notifyPanel, L.EDIT_NOTIFY_SOUND_LABEL)
+  soundHeader:SetPoint("LEFT", notifyPanel, "LEFT", LEFT_MARGIN, 0)
+  soundHeader:SetPoint("TOP",  soundSep, "BOTTOM", 0, -10)
+
+  local soundDescText = makeMutedLabel(notifyPanel, L.EDIT_NOTIFY_SOUND_DESC)
+  soundDescText:SetPoint("TOPLEFT", soundHeader, "BOTTOMLEFT", 0, -4)
+  soundDescText:SetWidth(INNER_WIDTH)
+  soundDescText:SetJustifyH("LEFT")
+
+  -- Returns true when there's an actually-playable sound configured.
+  -- Value shape mirrors Constants.SOUNDS:
+  --   number != SOUND_NONE -> SoundKit ID
+  --   string "file:<id>"   -> FileDataID
+  --   other non-empty str  -> LSM media name
+  local function isPlayableSound(value)
+    if value == nil or value == Constants.SOUND_NONE then return false end
+    if type(value) == "number" then return value ~= Constants.SOUND_NONE end
+    if type(value) == "string" then return value ~= "" end
+    return false
+  end
+  frame.isPlayableSound = isPlayableSound
+
+  -- Plays the configured sound via the right API. Mirrors the dispatcher
+  -- in Watchers.lua exactly so the in-editor preview matches the in-game
+  -- behavior. pcall-wrapped so a bad value never throws into the UI.
+  local function playSoundValue(value)
+    if not isPlayableSound(value) then return end
+    if type(value) == "number" then
+      pcall(PlaySound, value, "Master")
+      return
+    end
+    if type(value) == "string" then
+      local fileID = value:match("^file:(%d+)$")
+      if fileID then
+        pcall(PlaySoundFile, tonumber(fileID), "Master")
+        return
+      end
+      local LSM
+      pcall(function() LSM = LibStub and LibStub("LibSharedMedia-3.0", true) end)
+      if not LSM then return end
+      local path
+      pcall(function() path = LSM:Fetch("sound", value) end)
+      if path and path ~= "" then
+        pcall(PlaySoundFile, path, "Master")
+      end
+    end
+  end
+  frame.playSoundValue = playSoundValue
+
+  -- Sound options: built-ins from Constants.SOUNDS plus any LSM-registered
+  -- sounds, merged into one alphabetical list with "(none)" pinned at the
+  -- top. LSM probe is soft: when LSM isn't installed, only the built-ins
+  -- show. No "LSM:" prefix on labels — the source isn't user-relevant.
+  local soundOptions = { { value = Constants.SOUND_NONE, label = "(none)" } }
+  local merged = {}
+  for _, s in ipairs(Constants.SOUNDS) do
+    table.insert(merged, { value = s.value, label = s.label, playable = true })
+  end
+  do
+    local LSM
+    pcall(function() LSM = LibStub and LibStub("LibSharedMedia-3.0", true) end)
+    if LSM and LSM.HashTable then
+      local ht = LSM:HashTable("sound")
+      if type(ht) == "table" then
+        for name in pairs(ht) do
+          table.insert(merged, { value = name, label = name, playable = true })
+        end
+      end
+    end
+  end
+  table.sort(merged, function(a, b) return a.label:lower() < b.label:lower() end)
+  for _, opt in ipairs(merged) do table.insert(soundOptions, opt) end
+
+  local soundDd = makeSoundDropdown(notifyPanel, 220, soundOptions,
+    function(value)
+      if Panel.state and Panel.state.notifications then
+        Panel.state.notifications.sound = value
+        -- Full refresh so the Test button's enabled-state updates alongside
+        -- the dropdown label.
+        refreshEditForm()
+      end
+    end,
+    function()
+      return Panel.state and Panel.state.notifications and Panel.state.notifications.sound
+    end,
+    playSoundValue)
+  soundDd:SetPoint("TOPLEFT", soundDescText, "BOTTOMLEFT", 0, -8)
+  frame.notifySoundDd = soundDd
+
+  local testBtn = CreateFrame("Button", nil, notifyPanel, "UIPanelButtonTemplate")
+  testBtn:SetSize(70, 22)
+  testBtn:SetPoint("LEFT", soundDd, "RIGHT", 10, 0)
+  testBtn:SetText(L.EDIT_NOTIFY_SOUND_TEST_BTN)
+  testBtn:SetScript("OnClick", function()
+    if not Panel.state or not Panel.state.notifications then return end
+    playSoundValue(Panel.state.notifications.sound)
+  end)
+  frame.notifyTestBtn = testBtn
+
+  -- ----- Coloring section -----
+  -- One row per trigger phrase, rebuilt every refreshEditForm so changes on
+  -- the Trigger tab (add/remove/edit) flow into the row list. Each row lets
+  -- the user pick an explicit hex color, open the WoW ColorPicker, or check
+  -- "Class color" to use the player's class color at render time.
+  local coloringSep = makeFullSeparator(notifyPanel, soundDd, -18)
+
+  local coloringHeader = makeHeader(notifyPanel, L.EDIT_NOTIFY_COLORING_HEADER)
+  coloringHeader:SetPoint("LEFT", notifyPanel, "LEFT", LEFT_MARGIN, 0)
+  coloringHeader:SetPoint("TOP",  coloringSep, "BOTTOM", 0, -10)
+
+  local coloringDesc = makeMutedLabel(notifyPanel, L.EDIT_NOTIFY_COLORING_DESC)
+  coloringDesc:SetPoint("TOPLEFT", coloringHeader, "BOTTOMLEFT", 0, -4)
+  coloringDesc:SetWidth(INNER_WIDTH)
+  coloringDesc:SetJustifyH("LEFT")
+
+  -- Anchor for the first coloring row. rebuildColoringRows chains the rest
+  -- off each previous row. The empty hint sits at the same anchor for when
+  -- the watcher has no trigger phrases yet.
+  local coloringArea = CreateFrame("Frame", nil, notifyPanel)
+  coloringArea:SetPoint("TOPLEFT", coloringDesc, "BOTTOMLEFT", 0, -10)
+  coloringArea:SetSize(INNER_WIDTH, 1)
+  frame.coloringArea = coloringArea
+  frame.coloringRows = {}
+
+  local coloringEmpty = makeMutedLabel(notifyPanel, L.EDIT_NOTIFY_COLORING_EMPTY)
+  coloringEmpty:SetPoint("TOPLEFT", coloringArea, "TOPLEFT", 0, 0)
+  coloringEmpty:SetWidth(INNER_WIDTH)
+  coloringEmpty:SetJustifyH("LEFT")
+  coloringEmpty:Hide()
+  frame.coloringEmptyHint = coloringEmpty
+
+  -- A 1x1 placeholder that rebuildColoringRows repositions to sit just below
+  -- the last row. Anything below the Coloring section (currently nothing,
+  -- but reserved for future use) anchors to this so the layout reflows.
+  local coloringBottom = CreateFrame("Frame", nil, notifyPanel)
+  coloringBottom:SetSize(1, 1)
+  coloringBottom:SetPoint("TOPLEFT", coloringArea, "TOPLEFT", 0, 0)
+  frame.coloringBottom = coloringBottom
+
+  frame.notifyBlockBottom = coloringBottom
+
   return frame
 end
 
@@ -1583,10 +2043,6 @@ refreshEditForm = function()
     if IsInGuild() then guildCb:Enable() else guildCb:Disable() end
   end
 
-  -- Exact match (state -> widget)
-  if f.exactCheck then
-    f.exactCheck:SetChecked(s.exact and true or false)
-  end
 
   -- "Only when leader/assist" is only meaningful when a group channel is
   -- ticked. The checkbox lives inside the channel grid (right column, row 4)
@@ -1634,9 +2090,12 @@ refreshEditForm = function()
 
   -- Invite cascade + kick anchor reflow. When invite is off, hide *both* the
   -- sub-checkboxes AND their descriptions (the descriptions are children of
-  -- the invite block, not standalone text).
+  -- the invite block, not standalone text). afterInvite uses split LEFT/TOP
+  -- anchors so x is fixed at the section's left margin while y tracks the
+  -- bottom-most visible widget of the invite block.
   f.inviteCheck:SetChecked(s.reply.invite and true or false)
   f.afterInvite:ClearAllPoints()
+  f.afterInvite:SetPoint("LEFT", f.replyPanel, "LEFT", LEFT_MARGIN, 0)
   if s.reply.invite then
     f.inviteConfirmCheck:Show()
     f.inviteConfirmDesc:Show()
@@ -1651,17 +2110,33 @@ refreshEditForm = function()
       f.inviteQueueCheck:SetChecked(s.reply.inviteQueue ~= false)
       f.inviteQueueCheck:Enable()
     end
-    -- inviteQueueCheck is sub-indented +20 from inviteCheck. Walk back -20
-    -- so the kick checkbox lines back up with "Invite sender". The -8 gap
-    -- matches the tightened sub-row spacing above.
-    f.afterInvite:SetPoint("TOPLEFT", f.inviteBlockBottom, "BOTTOMLEFT", -20, -8)
+    f.afterInvite:SetPoint("TOP", f.inviteBlockBottom, "BOTTOM", 0, -10)
   else
     f.inviteConfirmCheck:Hide()
     f.inviteConfirmDesc:Hide()
     f.inviteQueueCheck:Hide()
     f.inviteQueueDesc:Hide()
-    -- inviteCheck is at parent x already; no horizontal adjustment needed.
-    f.afterInvite:SetPoint("TOPLEFT", f.inviteBlockTop, "BOTTOMLEFT", 0, -8)
+    f.afterInvite:SetPoint("TOP", f.inviteBlockTop, "BOTTOM", 0, -10)
+  end
+
+  -- Guild invite is gated on guild membership. When the player isn't in a
+  -- guild we hide both the checkbox and its inline description, force the
+  -- state off (so a watcher set up while guilded doesn't silently fire a
+  -- no-op invite after the user leaves), and collapse afterGuildInvite up
+  -- to afterInvite so the Kick row tucks back under the (party) Invite block.
+  f.afterGuildInvite:ClearAllPoints()
+  f.afterGuildInvite:SetPoint("LEFT", f.replyPanel, "LEFT", LEFT_MARGIN, 0)
+  if IsInGuild() then
+    f.guildInviteCheck:Show()
+    if f.guildInviteDesc then f.guildInviteDesc:Show() end
+    f.guildInviteCheck:SetChecked(s.reply.guildInvite and true or false)
+    -- Anchor below the guild-invite description so the kick row clears it.
+    f.afterGuildInvite:SetPoint("TOP", f.guildInviteDesc or f.guildInviteCheck, "BOTTOM", 0, -10)
+  else
+    s.reply.guildInvite = false
+    f.guildInviteCheck:Hide()
+    if f.guildInviteDesc then f.guildInviteDesc:Hide() end
+    f.afterGuildInvite:SetPoint("TOP", f.afterInvite, "TOP", 0, 0)
   end
 
   f.kickCheck:SetChecked(s.reply.kick and true or false)
@@ -1801,6 +2276,43 @@ refreshEditForm = function()
     end
   end
 
+  -- Notifications tab (state -> widgets). Cheap one-way sync; the widgets
+  -- themselves push back to state in their OnClick / dropdown callbacks.
+  s.notifications = s.notifications or { sound = Constants.SOUND_NONE, noReply = false }
+  if f.notifySoundDd and f.notifySoundDd.SyncLabel then f.notifySoundDd:SyncLabel() end
+  if f.notifyNoReplyCheck then
+    f.notifyNoReplyCheck:SetChecked(s.notifications.noReply and true or false)
+  end
+
+  -- Reply tab title reflects whether the reply config is honored at runtime.
+  -- When noReply is on, the reply tab is bypassed — grey the tab name and
+  -- attach a tooltip explaining why. The tab is still clickable so the user
+  -- can inspect / edit the reply config, it just won't fire while noReply
+  -- stays on.
+  if f.replyTabBtn then
+    local fs = f.replyTabBtn.Text or (f.replyTabBtn.GetFontString and f.replyTabBtn:GetFontString())
+    if s.notifications.noReply then
+      if fs then fs:SetTextColor(0.55, 0.55, 0.55) end
+      setTooltip(f.replyTabBtn,
+        L.EDIT_TAB_REPLY_DISABLED_TOOLTIP_TITLE,
+        L.EDIT_TAB_REPLY_DISABLED_TOOLTIP_DESC)
+    else
+      if fs then fs:SetTextColor(1, 0.82, 0) end -- default tab gold
+      -- Clear the tooltip handlers so hovering doesn't show a stale message.
+      f.replyTabBtn:SetScript("OnEnter", nil)
+      f.replyTabBtn:SetScript("OnLeave", nil)
+    end
+  end
+  if f.notifyTestBtn then
+    local playable = f.isPlayableSound and f.isPlayableSound(s.notifications.sound) or false
+    if playable then f.notifyTestBtn:Enable() else f.notifyTestBtn:Disable() end
+  end
+
+  -- Coloring rows mirror the live trigger list. Rebuilding every refresh is
+  -- cheap (typically 1-3 phrases per watcher) and avoids needing per-row
+  -- tab-switch wiring.
+  Panel:rebuildColoringRows()
+
   Panel:updateSaveButton()
 
   -- Resize the scroll content to the actual bottom of the laid-out form so
@@ -1808,12 +2320,14 @@ refreshEditForm = function()
   -- collapsed. Deferred to the next frame because BOTTOM is anchor-derived
   -- and only resolves after the layout pass. The "last" widget depends on
   -- which tab is active: trigger tab ends at the last filter block; reply
-  -- tab ends at the kick row.
+  -- tab ends at the kick row; notify tab ends at the noReply checkbox.
   C_Timer.After(0, function()
     if not f.scrollContent then return end
     local last
     if Panel.editTab == "reply" then
       last = f.kickBlockBottom or f.kickCheck
+    elseif Panel.editTab == "notify" then
+      last = f.notifyBlockBottom or f.notifyNoReplyCheck
     else
       if f.filterBlocks and #f.filterBlocks > 0 then
         last = f.filterBlocks[#f.filterBlocks].bottomAnchor
@@ -1865,23 +2379,28 @@ function Panel:rebuildTriggerInputs()
 
   if type(s.triggers) ~= "table" then s.triggers = {} end
   if #s.triggers == 0 then s.triggers = { "" } end
+  s.triggerCaseSensitive = s.triggerCaseSensitive or {}
+  s.triggerExact         = s.triggerExact or {}
 
+  -- Tear down every previous row.
   for _, row in ipairs(f.trigRows) do
-    row.input:Hide();     row.input:SetParent(nil)
-    row.removeBtn:Hide(); row.removeBtn:SetParent(nil)
+    for _, w in ipairs(row.widgets) do
+      w:Hide(); w:SetParent(nil)
+    end
   end
   f.trigRows = {}
 
+  local cols = f.trigCols
   local removeBtnWidth = 24
-  local rowGap         = 6
-  local inputWidth     = INNER_WIDTH - removeBtnWidth - rowGap - 6
+  local rowChainGap    = 8 -- vertical gap between successive rows
 
   for i = 1, #s.triggers do
-    local input = makeInput(f.trigArea, inputWidth)
+    -- ----- Phrase input -----
+    local input = makeInput(f.trigArea, cols.phraseW)
     if i == 1 then
       input:SetPoint("TOPLEFT", f.trigArea, "TOPLEFT", 0, 0)
     else
-      input:SetPoint("TOPLEFT", f.trigRows[i - 1].input, "BOTTOMLEFT", 0, -rowGap)
+      input:SetPoint("TOPLEFT", f.trigRows[i - 1].input, "BOTTOMLEFT", 0, -rowChainGap)
     end
     input:SetText(s.triggers[i] or "")
     input:SetScript("OnTextChanged", function(editBox)
@@ -1891,25 +2410,69 @@ function Panel:rebuildTriggerInputs()
       end
     end)
 
+    -- ----- Case-sensitive checkbox (no inline label — column header above) -----
+    -- Anchor LEFT-to-RIGHT against the input so the checkbox's vertical
+    -- centre lines up with the input's vertical centre (rather than TOP
+    -- aligning, which left the checkbox visually high above the input).
+    local caseCheck = makeCheckbox(f.trigArea, "")
+    caseCheck:SetPoint("LEFT", input, "RIGHT", cols.caseX - cols.phraseW, 0)
+    caseCheck:SetChecked(s.triggerCaseSensitive[i] and true or false)
+    caseCheck:SetScript("OnClick", function(self)
+      if not Panel.state then return end
+      Panel.state.triggerCaseSensitive = Panel.state.triggerCaseSensitive or {}
+      Panel.state.triggerCaseSensitive[i] = self:GetChecked() and true or false
+    end)
+    setTooltip(caseCheck, L.EDIT_PHRASE_CASE_TOOLTIP_TITLE, L.EDIT_PHRASE_CASE_TOOLTIP_DESC)
+
+    -- ----- Exact match checkbox (no inline label) -----
+    local exactCheck = makeCheckbox(f.trigArea, "")
+    exactCheck:SetPoint("LEFT", input, "RIGHT", cols.exactX - cols.phraseW, 0)
+    exactCheck:SetChecked(s.triggerExact[i] and true or false)
+    exactCheck:SetScript("OnClick", function(self)
+      if not Panel.state then return end
+      Panel.state.triggerExact = Panel.state.triggerExact or {}
+      Panel.state.triggerExact[i] = self:GetChecked() and true or false
+      Panel:updateSaveButton()
+    end)
+    setTooltip(exactCheck, L.EDIT_EXACT_LABEL, L.EDIT_EXACT_DESC)
+
+    -- ----- X remove button -----
     local removeBtn = CreateFrame("Button", nil, f.trigArea, "UIPanelButtonTemplate")
     removeBtn:SetSize(removeBtnWidth, 22)
     removeBtn:SetText("X")
-    removeBtn:SetPoint("LEFT", input, "RIGHT", rowGap, 0)
+    removeBtn:SetPoint("LEFT", input, "RIGHT", cols.removeX - cols.phraseW, 0)
     removeBtn:SetScript("OnClick", function()
       if not Panel.state or not Panel.state.triggers then return end
       if #Panel.state.triggers <= 1 then return end
       Panel:syncTriggersFromInputs()
       table.remove(Panel.state.triggers, i)
+      -- Keep parallel arrays index-aligned — drop the matching slot in each
+      -- per-trigger array so a later phrase doesn't inherit settings.
+      if Panel.state.triggerCaseSensitive then
+        table.remove(Panel.state.triggerCaseSensitive, i)
+      end
+      if Panel.state.triggerExact then
+        table.remove(Panel.state.triggerExact, i)
+      end
+      if Panel.state.notifications and Panel.state.notifications.triggerColors then
+        table.remove(Panel.state.notifications.triggerColors, i)
+      end
       Panel:rebuildTriggerInputs()
     end)
     if #s.triggers <= 1 then removeBtn:Hide() end
 
-    table.insert(f.trigRows, { input = input, removeBtn = removeBtn })
+    table.insert(f.trigRows, {
+      input = input, removeBtn = removeBtn,
+      caseCheck = caseCheck, exactCheck = exactCheck,
+      widgets = { input, removeBtn, caseCheck, exactCheck },
+    })
   end
 
   local lastRow = f.trigRows[#f.trigRows]
+  -- +Add button anchors below the last input — column-grid layout means we
+  -- don't need to walk past per-row flag rows anymore.
   f.trigAddBtn:ClearAllPoints()
-  f.trigAddBtn:SetPoint("TOPLEFT", lastRow.input, "BOTTOMLEFT", -6, -10)
+  f.trigAddBtn:SetPoint("TOPLEFT", lastRow.input, "BOTTOMLEFT", 0, -12)
 
   Panel:updateSaveButton()
 end
@@ -1984,13 +2547,12 @@ function Panel:rebuildReplyInputs()
 
   local lastRow = f.replyRows[#f.replyRows]
   f.replyAddBtn:ClearAllPoints()
-  f.replyAddBtn:SetPoint("TOPLEFT", lastRow.input, "BOTTOMLEFT", -6, -10)
+  f.replyAddBtn:SetPoint("TOPLEFT", lastRow.input, "BOTTOMLEFT", 0, -10)
 
   -- Reposition replyBlockBottom so downstream UI (placeholder docs, notes)
-  -- flows correctly. The -2 padding aligns visually with the original
-  -- single-input layout.
+  -- flows correctly.
   f.replyBlockBottom:ClearAllPoints()
-  f.replyBlockBottom:SetPoint("TOPLEFT", f.replyAddBtn, "BOTTOMLEFT", 6, -2)
+  f.replyBlockBottom:SetPoint("TOPLEFT", f.replyAddBtn, "BOTTOMLEFT", 0, -2)
 
   Panel:updateSaveButton()
 end
@@ -2086,6 +2648,251 @@ function Panel:rebuildEmoteInputs()
   f.emoteBlockBottom:SetPoint("TOPLEFT", f.emoteAddBtn, "BOTTOMLEFT", 0, -2)
 end
 
+-- ===== Coloring rows (Notifications tab) =====
+-- One row per trigger phrase, rebuilt from Panel.state.triggers. Each row
+-- shows: [phrase label] [swatch] [hex input] [Class color check]. State is
+-- mirrored back into Panel.state.notifications.triggerColors at index i,
+-- where: nil/"" = no color, "class" = use sender class color, "RRGGBB" = hex.
+
+local function parseHex6(text)
+  if type(text) ~= "string" then return nil end
+  text = text:gsub("^#", ""):gsub("%s+", ""):lower()
+  if text:match("^%x%x%x%x%x%x$") then return text end
+  return nil
+end
+
+local function hexToRGB01(hex)
+  if not hex or #hex ~= 6 then return 1, 1, 1 end
+  return tonumber(hex:sub(1, 2), 16) / 255,
+         tonumber(hex:sub(3, 4), 16) / 255,
+         tonumber(hex:sub(5, 6), 16) / 255
+end
+
+local function rgb01ToHex(r, g, b)
+  return string.format("%02x%02x%02x",
+    math.floor((r or 0) * 255 + 0.5),
+    math.floor((g or 0) * 255 + 0.5),
+    math.floor((b or 0) * 255 + 0.5))
+end
+
+-- Player's own class color as RGB01. Used as the swatch preview when "Class
+-- color" is checked — at edit time the actual sender is unknown, but showing
+-- the editor's own class color makes the affordance read as "a class color
+-- will be used" rather than a neutral grey that looks like "off".
+local function playerClassColor01()
+  local _, englishClass = UnitClass("player")
+  local rgb = englishClass and _G.RAID_CLASS_COLORS and _G.RAID_CLASS_COLORS[englishClass]
+  if not rgb then return 0.7, 0.7, 0.7 end
+  return rgb.r or 0.7, rgb.g or 0.7, rgb.b or 0.7
+end
+
+-- Opens Blizzard's ColorPickerFrame seeded with the row's current explicit
+-- color (or white if blank), and pipes user changes back into state via
+-- onPick. Uses the modern SetupColorPickerAndShow API.
+local function openColorPickerForRow(currentHex, onPick)
+  local r, g, b = hexToRGB01(currentHex or "ffffff")
+  local previous = { r = r, g = g, b = b }
+  local opts = {
+    r = r, g = g, b = b,
+    swatchFunc = function()
+      local nr, ng, nb = ColorPickerFrame:GetColorRGB()
+      onPick(rgb01ToHex(nr, ng, nb))
+    end,
+    cancelFunc = function()
+      onPick(rgb01ToHex(previous.r, previous.g, previous.b))
+    end,
+    hasOpacity = false,
+  }
+  if ColorPickerFrame.SetupColorPickerAndShow then
+    ColorPickerFrame:SetupColorPickerAndShow(opts)
+  else
+    -- Legacy fallback for older clients without the modern setup helper.
+    ColorPickerFrame.func        = opts.swatchFunc
+    ColorPickerFrame.cancelFunc  = opts.cancelFunc
+    ColorPickerFrame.hasOpacity  = false
+    ColorPickerFrame.previousValues = previous
+    ColorPickerFrame:SetColorRGB(r, g, b)
+    ShowUIPanel(ColorPickerFrame)
+  end
+end
+
+function Panel:rebuildColoringRows()
+  local f = Panel._editFrame
+  local s = Panel.state
+  if not f or not s or not f.coloringArea then return end
+  s.notifications = s.notifications or {}
+  s.notifications.triggerColors = s.notifications.triggerColors or {}
+
+  -- Tear down previous rows. Each row stores its child widgets in a flat
+  -- array under `.widgets` so we can hide+unparent them generically.
+  for _, row in ipairs(f.coloringRows or {}) do
+    for _, w in ipairs(row.widgets) do
+      w:Hide(); w:SetParent(nil)
+    end
+  end
+  f.coloringRows = {}
+
+  -- Trim triggerColors to match the trigger count so saved data doesn't drift
+  -- when phrases are removed. Out-of-range entries are dropped silently.
+  for i = #s.triggers + 1, #s.notifications.triggerColors do
+    s.notifications.triggerColors[i] = nil
+  end
+
+  -- Empty-state: hint sits in for the row list when no phrases are configured.
+  if #s.triggers == 0 then
+    f.coloringEmptyHint:Show()
+    f.coloringBottom:ClearAllPoints()
+    f.coloringBottom:SetPoint("TOPLEFT", f.coloringEmptyHint, "BOTTOMLEFT", 0, -2)
+    return
+  end
+  f.coloringEmptyHint:Hide()
+
+  local ROW_H        = 26
+  local PHRASE_W     = 220
+  local SWATCH_SIZE  = 18
+  local HEX_W        = 70
+  local prevRow
+
+  for i, phrase in ipairs(s.triggers) do
+    local row = CreateFrame("Frame", nil, f.coloringArea)
+    row:SetSize(INNER_WIDTH, ROW_H)
+    if i == 1 then
+      row:SetPoint("TOPLEFT", f.coloringArea, "TOPLEFT", 0, 0)
+    else
+      row:SetPoint("TOPLEFT", prevRow, "BOTTOMLEFT", 0, -4)
+    end
+
+    -- Phrase label (truncated visually by SetWidth — full phrase fits on
+    -- screen via tooltip if we wanted; for now we just clip).
+    local label = row:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    label:SetPoint("LEFT", row, "LEFT", 0, 0)
+    label:SetSize(PHRASE_W, ROW_H)
+    label:SetJustifyH("LEFT")
+    local displayed = (phrase ~= "" and phrase) or L.LIST_ROW_PLACEHOLDER_DASH
+    label:SetText(colored(displayed, COLOR_HEADING))
+
+    local current = s.notifications.triggerColors[i]
+    local isClass = current == "class"
+    local explicitHex = (type(current) == "string" and current ~= "class") and parseHex6(current) or nil
+
+    -- Color swatch — small framed Button so we can show a border around the
+    -- color square and capture clicks. The inner texture is repainted to the
+    -- current hex (or grey/neutral when class color is on or unset).
+    local swatchBtn = CreateFrame("Button", nil, row, "BackdropTemplate")
+    swatchBtn:SetSize(SWATCH_SIZE, SWATCH_SIZE)
+    swatchBtn:SetPoint("LEFT", label, "RIGHT", 8, 0)
+    swatchBtn:SetBackdrop({
+      bgFile   = "Interface\\Buttons\\WHITE8x8",
+      edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+      tile = false, edgeSize = 8,
+      insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+
+    -- hex input
+    local hexInput = CreateFrame("EditBox", nil, row, "InputBoxTemplate")
+    hexInput:SetSize(HEX_W, INPUT_HEIGHT)
+    hexInput:SetAutoFocus(false)
+    hexInput:SetMaxLetters(7)
+    hexInput:SetFontObject(ChatFontNormal)
+    hexInput:SetPoint("LEFT", swatchBtn, "RIGHT", 10, 0)
+    hexInput:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    hexInput:SetScript("OnEnterPressed",  function(self) self:ClearFocus() end)
+
+    -- Class color checkbox
+    local classCheck = makeCheckbox(row, L.EDIT_NOTIFY_COLORING_CLASS_LABEL)
+    classCheck:SetPoint("LEFT", hexInput, "RIGHT", 18, 0)
+
+    -- ----- Row state plumbing -----
+    -- repaint() updates the swatch backdrop color, the hex input text, and
+    -- the input's enabled state. Reads from `Panel.state.notifications.
+    -- triggerColors[i]` so calling repaint after any state change just works.
+    local function repaint()
+      local v = Panel.state.notifications.triggerColors[i]
+      local class = (v == "class")
+      local hex = (type(v) == "string" and v ~= "class") and parseHex6(v) or nil
+
+      if class then
+        local cr, cg, cb = playerClassColor01()
+        swatchBtn:SetBackdropColor(cr, cg, cb, 1)
+        hexInput:SetText("")
+        hexInput:Disable()
+        if not classCheck:GetChecked() then classCheck:SetChecked(true) end
+      elseif hex then
+        local rr, gg, bb = hexToRGB01(hex)
+        swatchBtn:SetBackdropColor(rr, gg, bb, 1)
+        if hexInput:GetText() ~= hex then hexInput:SetText(hex) end
+        hexInput:Enable()
+        if classCheck:GetChecked() then classCheck:SetChecked(false) end
+      else
+        -- Neither set: neutral swatch, empty input, checkbox off.
+        swatchBtn:SetBackdropColor(0.2, 0.2, 0.2, 1)
+        if hexInput:GetText() ~= "" then hexInput:SetText("") end
+        hexInput:Enable()
+        if classCheck:GetChecked() then classCheck:SetChecked(false) end
+      end
+    end
+
+    -- Seed initial visuals from saved state.
+    if isClass then
+      classCheck:SetChecked(true)
+      hexInput:Disable()
+    elseif explicitHex then
+      hexInput:SetText(explicitHex)
+    end
+    repaint()
+
+    swatchBtn:SetScript("OnClick", function()
+      -- Class-color mode owns the swatch — clicking it shouldn't open the
+      -- picker since the result wouldn't be persisted anyway.
+      if Panel.state.notifications.triggerColors[i] == "class" then return end
+      openColorPickerForRow(parseHex6(Panel.state.notifications.triggerColors[i]) or "ffffff",
+        function(newHex)
+          if newHex then
+            Panel.state.notifications.triggerColors[i] = newHex
+            repaint()
+          end
+        end)
+    end)
+    setTooltip(swatchBtn, L.EDIT_NOTIFY_COLORING_PICK_TOOLTIP, nil)
+
+    hexInput:SetScript("OnTextChanged", function(self)
+      if Panel.state.notifications.triggerColors[i] == "class" then return end
+      local text = self:GetText() or ""
+      if text == "" then
+        Panel.state.notifications.triggerColors[i] = nil
+        swatchBtn:SetBackdropColor(0.2, 0.2, 0.2, 1)
+        return
+      end
+      local hex = parseHex6(text)
+      if hex then
+        Panel.state.notifications.triggerColors[i] = hex
+        local rr, gg, bb = hexToRGB01(hex)
+        swatchBtn:SetBackdropColor(rr, gg, bb, 1)
+      end
+      -- Invalid intermediate text: leave state alone so the user can finish
+      -- typing without losing the previously-applied color.
+    end)
+    setTooltip(hexInput, L.EDIT_NOTIFY_COLORING_HEX_TOOLTIP_TITLE, L.EDIT_NOTIFY_COLORING_HEX_TOOLTIP_DESC)
+
+    classCheck:SetScript("OnClick", function(self)
+      if self:GetChecked() then
+        Panel.state.notifications.triggerColors[i] = "class"
+      else
+        Panel.state.notifications.triggerColors[i] = nil
+      end
+      repaint()
+    end)
+
+    table.insert(f.coloringRows, {
+      widgets = { row, label, swatchBtn, hexInput, classCheck },
+    })
+    prevRow = row
+  end
+
+  f.coloringBottom:ClearAllPoints()
+  f.coloringBottom:SetPoint("TOPLEFT", prevRow, "BOTTOMLEFT", 0, -2)
+end
+
 function Panel:updateSaveButton()
   local f = Panel._editFrame
   local s = Panel.state
@@ -2122,13 +2929,25 @@ function Panel:updateSaveButton()
       if e and e ~= Panel.EMOTE_NONE then hasEmote = true break end
     end
   end
-  local hasAction = hasReplyText or hasEmote or s.reply.invite or s.reply.kick
+  local hasAction = hasReplyText or hasEmote or s.reply.invite or s.reply.guildInvite or s.reply.kick
+
+  -- Notification sound counts as an observable effect, so a watcher with a
+  -- sound but no reply action is still savable. When "No reply needed" is
+  -- on, the reply action doesn't count (it'd be ignored at runtime anyway),
+  -- so the sound is the only thing that can satisfy the requirement. Sound
+  -- value is either a numeric kit ID or an LSM name string.
+  local notif = s.notifications or {}
+  local sv = notif.sound
+  local hasSound = sv ~= nil
+    and sv ~= Constants.SOUND_NONE
+    and not (type(sv) == "string" and sv == "")
+  local effectiveAction = hasSound or (not notif.noReply and hasAction)
 
   -- The full requirements list is on the Save button's hover tooltip
   -- (set up in buildEditForm). Here we only toggle enabled-ness — the
   -- tooltip surfaces only while the button is disabled, which exactly
   -- matches "form is incomplete".
-  if hasTrigger and anyChannel and hasAction then
+  if hasTrigger and anyChannel and effectiveAction then
     f.saveBtn:Enable()
   else
     f.saveBtn:Disable()
@@ -2188,9 +3007,18 @@ function Panel:saveEdit()
     return
   end
   local hasEmote = #s.reply.emotes > 0
-  local hasAction = (#s.reply.texts > 0) or hasEmote or s.reply.invite or s.reply.kick
-  if not hasAction then
-    reportSaveError(L.EDIT_ERR_NO_ACTION)
+  local hasAction = (#s.reply.texts > 0) or hasEmote or s.reply.invite or s.reply.guildInvite or s.reply.kick
+  -- Sound is either a numeric kit ID (built-in) or a string LSM name; either
+  -- one counts as a configured effect. SOUND_NONE (0) is the explicit
+  -- "no sound" sentinel.
+  local notif = s.notifications or {}
+  local soundValue = notif.sound
+  local hasSound = soundValue ~= nil
+    and soundValue ~= Constants.SOUND_NONE
+    and not (type(soundValue) == "string" and soundValue == "")
+  local effectiveAction = hasSound or (not notif.noReply and hasAction)
+  if not effectiveAction then
+    reportSaveError(L.EDIT_ERR_NO_EFFECT)
     return
   end
 
@@ -2254,15 +3082,47 @@ local function populateEditWidgets()
   refreshEditForm()
 end
 
+-- Updates the edit-form's top-bar title from the current state. New watchers
+-- show "Add new watcher"; existing watchers show "Edit '<name>'", or an
+-- "Edit (unnamed)" placeholder when the name input is empty. Called from
+-- enterEdit and from the name input's OnTextChanged so the title tracks the
+-- name as the user types.
+--
+-- Long names get truncated with an ellipsis so the title doesn't run into
+-- the Cancel/Save buttons on the top bar. The cap is a character count
+-- (not a pixel width) so the truncation is deterministic across fonts.
+local EDIT_HEADER_NAME_MAX = 30
+local function updateEditHeader(isNew)
+  local f = Panel._editFrame
+  if not f or not f.header then return end
+  if isNew then
+    f.header:SetText(L.EDIT_HEADER_NEW)
+    return
+  end
+  local nm = Panel.state and Panel.state.name or ""
+  nm = nm:match("^%s*(.-)%s*$") or ""
+  if nm == "" then
+    f.header:SetText(L.EDIT_HEADER_EDIT_UNNAMED)
+    return
+  end
+  if #nm > EDIT_HEADER_NAME_MAX then
+    nm = nm:sub(1, EDIT_HEADER_NAME_MAX - 1) .. "…"
+  end
+  f.header:SetText(string.format(L.EDIT_HEADER_EDIT_FMT, nm))
+end
+Panel._updateEditHeader = updateEditHeader
+
 enterEdit = function(id)
   if id then
     local existing = addon.Watchers:GetByID(id)
     if not existing then return end
     Panel.state = deepCopy(existing)
-    Panel._editFrame.header:SetText(L.EDIT_HEADER_EDIT)
+    Panel._isNewWatcher = false
+    updateEditHeader(false)
   else
     Panel.state = Constants.NEW_WATCHER_DEFAULTS()
-    Panel._editFrame.header:SetText(L.EDIT_HEADER_NEW)
+    Panel._isNewWatcher = true
+    updateEditHeader(true)
   end
   Panel.view = "edit"
   Panel._listFrame:Hide()

@@ -49,6 +49,27 @@ local function normalizeWatcher(w)
   if type(w) ~= "table" then return end
   w.reply = w.reply or {}
 
+  -- Per-trigger case-sensitive flags parallel to w.triggers. Older watchers
+  -- predate this field — default everything to nil (case-insensitive).
+  if type(w.triggerCaseSensitive) ~= "table" then
+    w.triggerCaseSensitive = {}
+  end
+
+  -- Per-trigger exact-match flags parallel to w.triggers. Lifts the legacy
+  -- whole-watcher `exact` boolean into the per-phrase array: when the old
+  -- field was true, every existing phrase gets exact=true so behavior is
+  -- preserved. We then clear the legacy field so future loads don't keep
+  -- re-migrating it.
+  if type(w.triggerExact) ~= "table" then
+    w.triggerExact = {}
+  end
+  if w.exact then
+    for i = 1, #(w.triggers or {}) do
+      if w.triggerExact[i] == nil then w.triggerExact[i] = true end
+    end
+    w.exact = nil
+  end
+
   -- Texts / emotes: lift scalar fields into list form and drop the originals
   -- so future loads don't keep re-migrating. An entry with both .text and
   -- .texts (shouldn't happen normally) prefers the existing .texts.
@@ -61,6 +82,24 @@ local function normalizeWatcher(w)
     w.reply.emotes = ensureList(w.reply.emote)
   end
   w.reply.emote = nil
+
+  -- Notifications block: added later than the reply block, so legacy watchers
+  -- need it filled in. Defaults to no sound and noReply=false.
+  w.notifications = w.notifications or {}
+  if w.notifications.sound == nil then
+    w.notifications.sound = Constants.SOUND_NONE
+  end
+  if w.notifications.noReply == nil then
+    w.notifications.noReply = false
+  end
+  if type(w.notifications.triggerColors) ~= "table" then
+    w.notifications.triggerColors = {}
+  end
+
+  -- guildInvite action: nil on legacy watchers, default off.
+  if w.reply.guildInvite == nil then
+    w.reply.guildInvite = false
+  end
 
   -- Filters block: fill missing keys from defaults but keep whatever the user
   -- already configured. We don't replace the whole block — the user's saved
@@ -454,7 +493,7 @@ end
 -- only legal route from an addon is a SecureActionButton whose macrotext
 -- dispatches through Blizzard's secure /uninvite or /invite slash handlers.
 
-local kickPopup, invitePopup
+local kickPopup, invitePopup, guildInvitePopup
 local pendingActions = {}
 
 local function buildPopup(frameName, accent)
@@ -511,6 +550,13 @@ end
 local function buildInvitePopup()
   local p = buildPopup("Meower_InvitePopup", { r = 0.1, g = 0.8, b = 0.1 })
   p.confirmBtn:SetText(L.POPUP_INVITE_CONFIRM_BTN)
+  return p
+end
+
+local function buildGuildInvitePopup()
+  -- Tabard purple to visually distinguish "guild" from the green party invite.
+  local p = buildPopup("Meower_GuildInvitePopup", { r = 0.55, g = 0.45, b = 0.95 })
+  p.confirmBtn:SetText(L.POPUP_GINVITE_CONFIRM_BTN)
   return p
 end
 
@@ -666,6 +712,56 @@ local function tryInvite(watcher, channelKey, sender, bnSenderID, trigger)
   pcall(C_PartyInfo.InviteUnit, target)
 end
 
+-- ===== Guild invite =====
+-- C_GuildInfo.Invite is a protected function (same constraint as /invite and
+-- /uninvite), so the only legal route from an addon is a SecureActionButton
+-- whose macrotext dispatches through the secure /ginvite slash handler. That
+-- requires a user click — hence the confirm popup. We can't fire-and-forget
+-- a guild invite from a chat event.
+--
+-- Permission gating: IsInGuild + CanGuildInvite (rank-level permission).
+-- /ginvite wants just the character name — strip realm when present.
+local function showGuildInvitePopup(channelKey, sender, bnSenderID, trigger)
+  if not guildInvitePopup then return end
+  if guildInvitePopup:IsShown() then
+    debugLog("guild-invite popup already open; ignoring new request")
+    return
+  end
+  if InCombatLockdown() then
+    table.insert(pendingActions, { kind = "guildInvite", channelKey = channelKey, sender = sender,
+                                   bnSenderID = bnSenderID, trigger = trigger })
+    combatNotice(sender, "You're in combat — your guild-invite prompt will surface after combat ends.")
+    return
+  end
+  local target = targetCharFor(channelKey, sender, bnSenderID)
+  if not target then
+    debugLog("cannot guild-invite: could not resolve sender to a WoW character (BNet friend offline or not on WoW)")
+    return
+  end
+  local charOnly = target:match("^([^-]+)") or target
+  guildInvitePopup.text:SetText(string.format(L.POPUP_GINVITE_BODY_FMT,
+    sender or "?", trigger or "?", channelLabelColored(channelKey)
+  ))
+  guildInvitePopup.confirmBtn:SetAttribute("macrotext", "/ginvite " .. charOnly)
+  guildInvitePopup:Show()
+end
+
+local function tryGuildInvite(channelKey, sender, bnSenderID, trigger)
+  if not sender or sender == "" then
+    debugLog("cannot guild-invite: no sender name")
+    return
+  end
+  if not IsInGuild() then
+    debugLog("cannot guild-invite: not in a guild")
+    return
+  end
+  if CanGuildInvite and not CanGuildInvite() then
+    debugLog("cannot guild-invite: rank has no invite permission")
+    return
+  end
+  showGuildInvitePopup(channelKey, sender, bnSenderID, trigger)
+end
+
 -- ===== Combat queue drain =====
 
 local function drainPendingActions()
@@ -679,6 +775,9 @@ local function drainPendingActions()
     if req.kind == "kick" then
       combatNotice(req.sender, "Combat ended — kick prompt opening now.")
       showKickPopup(req.channelKey, req.sender, req.bnSenderID, req.trigger)
+    elseif req.kind == "guildInvite" then
+      combatNotice(req.sender, "Combat ended — guild-invite prompt opening now.")
+      showGuildInvitePopup(req.channelKey, req.sender, req.bnSenderID, req.trigger)
     elseif req.kind == "inviteConfirm" then
       combatNotice(req.sender, "Combat ended — invite prompt opening now.")
       showInvitePopup(req.channelKey, req.sender, req.bnSenderID, req.trigger)
@@ -696,9 +795,52 @@ end
 
 -- ===== Dispatch =====
 
+-- Sound value polymorphism (single source of truth — keep this comment in
+-- sync with Constants.SOUNDS and the editor's playSoundValue):
+--   number != SOUND_NONE -> PlaySound(value, "Master")        SoundKit ID
+--   string "file:<id>"   -> PlaySoundFile(<id>, "Master")     FileDataID
+--   other non-empty str  -> LSM:Fetch("sound", value) + PlaySoundFile(path)
+-- "Master" channel so the cue plays even if Sound or SFX is muted in-game.
+local function playNotificationSound(watcher)
+  local n = watcher.notifications
+  if not n then return end
+  local v = n.sound
+  if v == nil or v == Constants.SOUND_NONE then return end
+
+  if type(v) == "number" then
+    pcall(PlaySound, v, "Master")
+    return
+  end
+
+  if type(v) == "string" and v ~= "" then
+    local fileID = v:match("^file:(%d+)$")
+    if fileID then
+      pcall(PlaySoundFile, tonumber(fileID), "Master")
+      return
+    end
+    local LSM
+    pcall(function() LSM = LibStub and LibStub("LibSharedMedia-3.0", true) end)
+    if not LSM then return end
+    local path
+    pcall(function() path = LSM:Fetch("sound", v) end)
+    if path and path ~= "" then
+      pcall(PlaySoundFile, path, "Master")
+    end
+  end
+end
+
 local function dispatch(watcher, channelKey, sender, bnSenderID, trigger)
   local r = watcher.reply
   if not r then return end
+
+  -- Local notification sound first — it's the user's "this matched" cue and
+  -- should fire even if the Reply tab is skipped via noReply, or if all
+  -- reply branches end up silent (e.g. group-channel reply with no group).
+  playNotificationSound(watcher)
+
+  -- "No reply needed" short-circuits the entire Reply tab: no text, no emote,
+  -- no invite, no kick. The notification sound above is the only effect.
+  if watcher.notifications and watcher.notifications.noReply then return end
 
   local hasText  = type(r.texts)  == "table" and #r.texts  > 0
   local hasEmote = type(r.emotes) == "table" and #r.emotes > 0
@@ -711,8 +853,157 @@ local function dispatch(watcher, channelKey, sender, bnSenderID, trigger)
     if hasEmote then doEmoteReply(watcher, sender) end
   end
 
-  if r.invite then tryInvite(watcher, channelKey, sender, bnSenderID, trigger) end
-  if r.kick   then tryKick(channelKey, sender, bnSenderID, trigger) end
+  if r.invite      then tryInvite(watcher, channelKey, sender, bnSenderID, trigger) end
+  if r.guildInvite then tryGuildInvite(channelKey, sender, bnSenderID, trigger) end
+  if r.kick        then tryKick(channelKey, sender, bnSenderID, trigger) end
+end
+
+-- ===== Per-trigger chat coloring =====
+-- Rewrites the displayed chat line so each matched trigger phrase is wrapped
+-- in |cffRRGGBB...|r based on the watcher's notifications.triggerColors. Only
+-- touches what chat frames render — the raw event still flows to our regular
+-- dispatcher (and any other addon's handlers) unchanged, because filters
+-- registered via ChatFrame_AddMessageEventFilter only affect chat-frame display.
+
+local function hexFromRGB(r, g, b)
+  return string.format("%02x%02x%02x",
+    math.floor((r or 0) * 255 + 0.5),
+    math.floor((g or 0) * 255 + 0.5),
+    math.floor((b or 0) * 255 + 0.5))
+end
+
+-- "Class color" always resolves to the local player's class color, not the
+-- sender's. This is intentional: the user-facing toggle is "their own class
+-- color as the highlight", independent of who triggered the watcher. Cached
+-- across calls because UnitClass for the player doesn't change in-session.
+local cachedPlayerClassHex
+local function playerClassColorHex()
+  if cachedPlayerClassHex then return cachedPlayerClassHex end
+  local _, englishClass = UnitClass("player")
+  if not englishClass or englishClass == "" then return nil end
+  local rgb = _G.RAID_CLASS_COLORS and _G.RAID_CLASS_COLORS[englishClass]
+  if not rgb then return nil end
+  cachedPlayerClassHex = hexFromRGB(rgb.r, rgb.g, rgb.b)
+  return cachedPlayerClassHex
+end
+
+-- Replace-all of `find` inside `s`, invoking replaceFn with the matched
+-- substring for each hit. When `caseSensitive` is false (default), matches
+-- ignore casing but the replacement is fed the original-cased match so we
+-- preserve the message's text. Pure-Lua to sidestep Lua patterns' lack of
+-- native case-insensitive matching.
+local function gsubMatch(s, find, replaceFn, caseSensitive)
+  if not s or s == "" or not find or find == "" then return s end
+  local hay = caseSensitive and s or s:lower()
+  local needle = caseSensitive and find or find:lower()
+  local out = {}
+  local i = 1
+  local n = #s
+  local flen = #find
+  while i <= n do
+    local pos = hay:find(needle, i, true) -- plain (non-pattern) search
+    if not pos then
+      table.insert(out, s:sub(i))
+      break
+    end
+    if pos > i then table.insert(out, s:sub(i, pos - 1)) end
+    table.insert(out, replaceFn(s:sub(pos, pos + flen - 1)))
+    i = pos + flen
+  end
+  return table.concat(out)
+end
+
+-- Strict 6-digit hex validator (no leading "#", no alpha). The UI normalizes
+-- input to this shape before storing, so this is just a safety check at the
+-- render site.
+local function isValidHex6(h)
+  return type(h) == "string" and h:match("^%x%x%x%x%x%x$") ~= nil
+end
+
+-- Returns the message with each enabled watcher's matching trigger phrases
+-- color-wrapped. `channelKey` gates the watcher to this channel's filter.
+local function applyTriggerColoring(message, channelKey)
+  if not message or message == "" then return message end
+
+  -- Collect {phrase, hex} entries from every enabled watcher whose channel
+  -- includes this event. First-watcher-wins per phrase: subsequent rules for
+  -- the same lowercased phrase are ignored.
+  local entries, seen = {}, {}
+  for _, watcher in ipairs(db().Watchers) do
+    if watcher.enabled
+       and watcher.channels and watcher.channels[channelKey]
+       and watcher.notifications and watcher.notifications.triggerColors
+       and watcher.triggers
+    then
+      local colors = watcher.notifications.triggerColors
+      local caseFlags = watcher.triggerCaseSensitive or {}
+      for i, phrase in ipairs(watcher.triggers) do
+        local c = colors[i]
+        if phrase and phrase ~= "" and c and c ~= "" then
+          -- De-dupe per phrase. The dedupe key tracks casing too so a
+          -- case-sensitive rule for "Foo" doesn't get shadowed by an earlier
+          -- case-insensitive rule for "foo".
+          local cs = caseFlags[i] and true or false
+          local key = (cs and "cs:" or "ci:") .. phrase:lower()
+          if not seen[key] then
+            local hex
+            if c == "class" then
+              hex = playerClassColorHex()
+            elseif isValidHex6(c) then
+              hex = c
+            end
+            if hex then
+              seen[key] = true
+              table.insert(entries, { phrase = phrase, hex = hex, caseSensitive = cs })
+            end
+          end
+        end
+      end
+    end
+  end
+
+  if #entries == 0 then return message end
+
+  -- Longest-first so a phrase like "thank you" wins over "thank" when both
+  -- are configured — otherwise the outer "thank" wrap would split the longer
+  -- match into uncolorable fragments.
+  table.sort(entries, function(a, b) return #a.phrase > #b.phrase end)
+
+  for _, e in ipairs(entries) do
+    message = gsubMatch(message, e.phrase, function(match)
+      return "|cff" .. e.hex .. match .. "|r"
+    end, e.caseSensitive)
+  end
+
+  return message
+end
+
+-- EVENT_TO_KEY (the module-level upvalue declared with chatFrame near the
+-- subscription block) is shared with the regular event dispatcher and the
+-- chat-coloring filter. Both read it at fire time, so the lazy population in
+-- Init is fine.
+--
+-- Filter signature mirrors ChatFrame_AddMessageEventFilter: (chatFrame, event,
+-- msg, sender, ..., guid, bnSenderID, ...). We only rewrite the message; the
+-- rest of the args pass through untouched. Return false to keep the line.
+local function chatColoringFilter(_, event, msg, ...)
+  if not msg or msg == "" or not EVENT_TO_KEY then return end
+  local channelKey = EVENT_TO_KEY[event]
+  if not channelKey then return end
+  local newMsg = applyTriggerColoring(msg, channelKey)
+  if newMsg == msg then return end
+  return false, newMsg, ...
+end
+
+local chatColoringRegistered = false
+local function registerChatColoringFilters()
+  if chatColoringRegistered then return end
+  chatColoringRegistered = true
+  for _, def in pairs(Constants.CHANNELS) do
+    for _, event in ipairs(def.events) do
+      pcall(ChatFrame_AddMessageEventFilter, event, chatColoringFilter)
+    end
+  end
 end
 
 -- ===== Chat event wiring =====
@@ -760,7 +1051,11 @@ function Watchers:ProcessMessage(channelKey, sender, message, bnSenderID)
           filtersAllow = addon.Filters:Allow(watcher, { sender = sender, bnSenderID = bnSenderID })
         end
         if not gated and filtersAllow then
-          local trigger = Helpers.findIn(lower, watcher.triggers, watcher.exact)
+          -- Pass the ORIGINAL message (not lowered) so per-phrase
+          -- case-sensitive matching can compare against the source casing.
+          -- findIn lowercases internally as needed. Both exactness and case
+          -- sensitivity are per-trigger arrays parallel to watcher.triggers.
+          local trigger = Helpers.findIn(message, watcher.triggers, watcher.triggerExact, watcher.triggerCaseSensitive)
           if trigger then
             dispatch(watcher, channelKey, sender, bnSenderID, trigger)
             recordWatcherCooldown(watcher, sender, bnSenderID)
@@ -832,8 +1127,9 @@ function Watchers:Init()
 
   -- Build secure popups now; SecureActionButton needs to be created out of
   -- combat, and Init() is reached from ADDON_LOADED, well before any pull.
-  kickPopup   = buildKickPopup()
-  invitePopup = buildInvitePopup()
+  kickPopup        = buildKickPopup()
+  invitePopup      = buildInvitePopup()
+  guildInvitePopup = buildGuildInvitePopup()
 
   -- The module-scope EVENT_TO_KEY / chatFrame / registeredEvents drive
   -- refreshEventSubscriptions, which only registers events that an enabled
@@ -844,6 +1140,13 @@ function Watchers:Init()
     onChatEvent(EVENT_TO_KEY, event, ...)
   end)
   refreshEventSubscriptions()
+
+  -- Register chat-frame message filters for per-trigger coloring. These are
+  -- separate from the event subscriptions above: filters only rewrite what
+  -- chat frames display, they don't drive our dispatcher. Registered once
+  -- across every channel we know about — short-circuits cheaply when no
+  -- watcher has triggerColors configured.
+  registerChatColoringFilters()
 
   local combatFrame = CreateFrame("Frame")
   combatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")

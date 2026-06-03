@@ -25,24 +25,38 @@ function Helpers.matchWholeWord(lower, phraseLower)
   end
 end
 
--- Returns the first phrase from `list` that matches `lower`, or nil. When
--- `exact` is truthy the entire message (trimmed of surrounding whitespace) must
--- equal the phrase; otherwise the phrase only needs to appear as a whole word
--- somewhere in the message. Both sides are case-insensitive — callers pass
--- `lower` already lower-cased and we lower the phrase here. The phrase is
--- returned in its original (un-lowercased) form so callers can substitute it
+-- Returns the first phrase from `list` that matches `message`, or nil. Both
+-- exactness and case-sensitivity are now per-phrase (parallel arrays):
+--   exactList[i]            truthy -> the trimmed message must equal phrase i
+--                           else   -> phrase i needs to appear as a whole word
+--   caseSensitiveList[i]    truthy -> match phrase i with exact casing
+--                           else   -> match phrase i case-insensitively
+-- The phrase is returned in its original casing so callers can substitute it
 -- back into reply templates verbatim.
-function Helpers.findIn(lower, list, exact)
+function Helpers.findIn(message, list, exactList, caseSensitiveList)
   if not list then return nil end
-  local trimmed = exact and (lower:match("^%s*(.-)%s*$") or lower) or nil
-  for _, phrase in ipairs(list) do
+  local lower = message:lower()
+  local lowerTrimmed = lower:match("^%s*(.-)%s*$") or lower
+  local origTrimmed  = message:match("^%s*(.-)%s*$") or message
+
+  for i, phrase in ipairs(list) do
     if phrase ~= "" then
-      local phraseLower = phrase:lower()
+      local cs = caseSensitiveList and caseSensitiveList[i] or false
+      local ex = exactList and exactList[i] or false
       local hit
-      if exact then
-        hit = (trimmed == phraseLower)
+      if ex then
+        if cs then
+          hit = (origTrimmed == phrase)
+        else
+          hit = (lowerTrimmed == phrase:lower())
+        end
       else
-        hit = Helpers.matchWholeWord(lower, phraseLower)
+        if cs then
+          -- Case-sensitive whole-word: feed the matcher the original strings.
+          hit = Helpers.matchWholeWord(message, phrase)
+        else
+          hit = Helpers.matchWholeWord(lower, phrase:lower())
+        end
       end
       if hit then return phrase end
     end
