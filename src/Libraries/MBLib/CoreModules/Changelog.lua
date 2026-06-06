@@ -4,6 +4,14 @@ local MBLib = addon.MBLib
 local Changelog = {}
 Changelog.list = {}
 
+-- Render order for a release's category sections. Anything not listed
+-- here falls through to alphabetical at the end, so adding a new
+-- category (e.g. "Security") still gets a stable slot without code
+-- changes — but the common "New > Changed > Fixed" reading flow is
+-- preserved regardless of which Lua table-iteration order pairs()
+-- happens to pick today.
+local CATEGORY_ORDER = { "New", "Changed", "Fixed", "Removed", "Deprecated" }
+
 -- Replace the changelog entries. Each entry is:
 --   { version = "X.Y.Z", date = "YYYY-MM-DD", notify = bool, categories = { ["Cat"] = { "line", ... } } }
 function Changelog:Set(list)
@@ -43,7 +51,7 @@ function Changelog:Build(contentFrame)
     v:SetText("|cffffd200" .. entry.version .. "|r (" .. entry.date .. ")")
     anchorBelow(v, leftPadding, entryIdx == 1 and 0 or 20)
 
-    for catName, changes in pairs(entry.categories) do
+    local function renderCategory(catName, changes)
       local cat = contentFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
       cat:SetWidth(width)
       cat:SetJustifyH("LEFT")
@@ -57,6 +65,26 @@ function Changelog:Build(contentFrame)
         chg:SetText("|cffcccccc- " .. text .. "|r")
         anchorBelow(chg, leftPadding + 10, 4)
       end
+    end
+
+    -- Render categories in the canonical New > Changed > Fixed order.
+    local rendered = {}
+    for _, catName in ipairs(CATEGORY_ORDER) do
+      local changes = entry.categories[catName]
+      if changes then
+        rendered[catName] = true
+        renderCategory(catName, changes)
+      end
+    end
+    -- Any non-canonical category (custom additions like "Security",
+    -- "Performance", …) falls through here, sorted alphabetically.
+    local extras = {}
+    for catName in pairs(entry.categories) do
+      if not rendered[catName] then table.insert(extras, catName) end
+    end
+    table.sort(extras)
+    for _, catName in ipairs(extras) do
+      renderCategory(catName, entry.categories[catName])
     end
   end
 

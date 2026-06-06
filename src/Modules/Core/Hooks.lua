@@ -15,17 +15,20 @@ local _, addon = ...
 --     output of each becomes the input of the next. pcall-wrapped, with a
 --     fallback that drops the callback's contribution if it throws (so the
 --     previous value carries through unchanged). Example: "ReplyTransforms"
---     lets Seasonal rewrite reply text without Watchers.lua knowing about
---     dates.
+--     lets Extras rewrite reply text without Watchers.lua knowing about
+--     the rules being applied.
 --
 -- GetNow is a swappable clock so Debug can override the current date for
--- testing seasonal transforms. Seasonal calls addon.Hooks.GetNow() instead
--- of date() directly.
+-- consumers that branch on the date. Extras call addon.Hooks.GetNow()
+-- instead of date() directly.
 
 local Hooks = {}
 
 Hooks.ReplyTransforms = {} -- Transform: (text, ctx) -> text
 Hooks.OnWatcherFired  = {} -- Dispatch:  (watcher, sender, channelKey, trigger)
+Hooks.OnReplyText     = {} -- Dispatch:  (watcher, sender, resolvedText)
+Hooks.OnEmoteFired    = {} -- Dispatch:  (watcher, sender, token)
+Hooks.OnActionFired   = {} -- Dispatch:  (watcher, sender, actionKind)  -- "invite" | "guildInvite" | "kick"
 Hooks.OnKickConfirmed = {} -- Dispatch:  (target, sender, channelKey, trigger)
 Hooks.OnAFKChanged    = {} -- Dispatch:  (isAFK)
 

@@ -29,9 +29,14 @@ end
 
 -- Return available fonts as a list of names; second return is name -> path map.
 -- Uses LibSharedMedia-3.0 via LibStub when available.
+--
+-- The cache (_fontList/_fontMap) is rebuilt on every call rather than
+-- memoized. Other addons can register custom fonts with LSM after MBLib
+-- has run its first scan — caching the early result freezes the list
+-- to whatever was registered at first call (typically only the WoW
+-- defaults + MBLib's bundled Expressway), and consumer dropdowns
+-- never pick up the late-registered entries without a /reload.
 function Fonts:GetAvailableFonts()
-  if self._fontList then return self._fontList, self._fontMap end
-
   self:RegisterEmbeddedFonts()
 
   local LSM
@@ -71,6 +76,18 @@ function Fonts:GetAvailableFonts()
   self._fontList = fonts
   self._fontMap = fontMap
   return fonts, fontMap
+end
+
+-- Called by OptionsScreen on each dropdown open to refresh def.Options
+-- for font-type settings. Keeps the font-specific knowledge here (in
+-- the Fonts module) rather than hardcoding the "Display_FontType" key
+-- in OptionsScreen. When the consumer hasn't loaded this opt-module,
+-- the call is a no-op (MBLib.Fonts is nil).
+function Fonts:RefreshOptionsForDef(def)
+  if not def then return end
+  if def.Key == "Display_FontType" then
+    def.Options = self:GetAvailableFonts()
+  end
 end
 
 MBLib.Fonts = Fonts

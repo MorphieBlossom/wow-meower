@@ -70,6 +70,14 @@ local function normalizeWatcher(w)
     w.exact = nil
   end
 
+  -- Per-trigger "partial match" (plain substring contains) flags. Mutually
+  -- exclusive with triggerExact at the UI layer; older watchers predate
+  -- this and default to nil (= whole-word matching, the historical
+  -- behavior).
+  if type(w.triggerPartial) ~= "table" then
+    w.triggerPartial = {}
+  end
+
   -- Texts / emotes: lift scalar fields into list form and drop the originals
   -- so future loads don't keep re-migrating. An entry with both .text and
   -- .texts (shouldn't happen normally) prefers the existing .texts.
@@ -82,6 +90,22 @@ local function normalizeWatcher(w)
     w.reply.emotes = ensureList(w.reply.emote)
   end
   w.reply.emote = nil
+
+  -- Per-emote "non-targeted" flags parallel to w.reply.emotes. Older
+  -- watchers had a single watcher-level boolean; lift it into the per-
+  -- emote array so every existing emote inherits the same flag, then
+  -- drop the legacy scalar. The default at runtime is false (targeted).
+  if type(w.reply.emoteNonTargeted) == "boolean" then
+    local was = w.reply.emoteNonTargeted
+    w.reply.emoteNonTargeted = {}
+    if was then
+      for i = 1, #(w.reply.emotes or {}) do
+        w.reply.emoteNonTargeted[i] = true
+      end
+    end
+  elseif type(w.reply.emoteNonTargeted) ~= "table" then
+    w.reply.emoteNonTargeted = {}
+  end
 
   -- Notifications block: added later than the reply block, so legacy watchers
   -- need it filled in. Defaults to no sound and noReply=false.
@@ -96,9 +120,62 @@ local function normalizeWatcher(w)
     w.notifications.triggerColors = {}
   end
 
+  -- Per-section master toggles. Legacy watchers predate them — derive from
+  -- "has data" so the section starts expanded for users who already
+  -- configured it, collapsed otherwise. Once the flags exist they're the
+  -- source of truth (and unticking clears the underlying data).
+  if w.notifications.soundEnabled == nil then
+    local sv = w.notifications.sound
+    w.notifications.soundEnabled = sv ~= nil
+      and sv ~= Constants.SOUND_NONE
+      and not (type(sv) == "string" and sv == "")
+  end
+  if w.notifications.coloringEnabled == nil then
+    local any = false
+    for _, v in pairs(w.notifications.triggerColors) do
+      if v and v ~= "" then any = true break end
+    end
+    w.notifications.coloringEnabled = any
+  end
+
+  -- Icon notification block. Added in 12.0.5.2 (Phase 2). Legacy watchers
+  -- get the defaults filled in here; later loads see the modern shape.
+  -- position stays nil until the user runs the Mover for this watcher —
+  -- at that point IconDisplay's onSave callback persists the tuple.
+  if type(w.notifications.icon) ~= "table" then
+    w.notifications.icon = {}
+  end
+  local ic = w.notifications.icon
+  if ic.fileID == nil      then ic.fileID = nil end
+  if ic.size == nil        then ic.size        = Constants.ICON_DEFAULT_SIZE end
+  if ic.fadeSeconds == nil then ic.fadeSeconds = Constants.ICON_DEFAULT_FADE end
+  if w.notifications.iconEnabled == nil then
+    w.notifications.iconEnabled = ic.fileID ~= nil
+  end
+  -- position intentionally left nil when unset — IconDisplay treats nil as
+  -- "place at screen center" until the user repositions via the Mover.
+
   -- guildInvite action: nil on legacy watchers, default off.
   if w.reply.guildInvite == nil then
     w.reply.guildInvite = false
+  end
+
+  -- Per-section master toggles for the Reply tab. Mirrors the Notifications
+  -- tab pattern: legacy watchers predate them, derive from "has data" so
+  -- the section starts expanded for already-configured watchers. Once set
+  -- the flags are the source of truth (and unticking clears the data).
+  if w.reply.textEnabled == nil then
+    local any = false
+    for _, t in ipairs(w.reply.texts or {}) do
+      if t and t ~= "" then any = true break end
+    end
+    w.reply.textEnabled = any
+  end
+  if w.reply.emoteEnabled == nil then
+    w.reply.emoteEnabled = type(w.reply.emotes) == "table" and #w.reply.emotes > 0
+  end
+  if w.reply.actionsEnabled == nil then
+    w.reply.actionsEnabled = (w.reply.invite or w.reply.guildInvite or w.reply.kick) and true or false
   end
 
   -- Filters block: fill missing keys from defaults but keep whatever the user
@@ -425,6 +502,21 @@ local function sendReplyTo(channelCode, text, sender, bnSenderID)
     return true
   end
 
+  -- World channels (General / Trade / Services). channelIndex is the slot
+  -- number the user currently has the channel joined as; GetChannelName
+  -- returns 0 when not joined, in which case the reply is silently skipped
+  -- (the user can't post to a channel they aren't in).
+  local def = Constants.CHANNEL_BY_KEY[channelCode]
+  if def and def.isWorldChannel and def.channelName then
+    local chIndex = GetChannelName(def.channelName)
+    if not chIndex or chIndex == 0 then
+      debugLog("skip channel reply: not joined to " .. def.channelName)
+      return false
+    end
+    SendChatMessage(text, "CHANNEL", nil, chIndex)
+    return true
+  end
+
   debugLog("skip reply: unknown channel code '" .. tostring(channelCode) .. "'")
   return false
 end
@@ -461,6 +553,7 @@ local function sendReply(watcher, channelKey, sender, bnSenderID, trigger)
     sender  = sender or "",
     trigger = trigger or "",
     channel = (def and def.label) or "",
+    purr    = pickRandom(Constants.PURR_PHRASES) or "",
   })
 
   -- Reply text transforms (Extras subscribe via Hooks). Each transform is
@@ -478,14 +571,36 @@ local function sendReply(watcher, channelKey, sender, bnSenderID, trigger)
   else
     sendReplyTo(ch, resolved, sender, bnSenderID)
   end
+  -- Stats subscribes here so the picked + transformed text shows up in the
+  -- top-replies list (random pick happens above, so OnWatcherFired alone
+  -- can't see the actually-sent text).
+  Hooks:Dispatch("OnReplyText", watcher, sender, resolved)
 end
 
 local function doEmoteReply(watcher, sender)
-  local emotes = watcher.reply and watcher.reply.emotes
-  local token = pickRandom(emotes)
+  local r = watcher.reply
+  local emotes = r and r.emotes
+  if type(emotes) ~= "table" or #emotes == 0 then return end
+  -- Pick by index (not just value) so we can look up the parallel
+  -- non-targeted flag for the same row.
+  local idx   = math.random(1, #emotes)
+  local token = emotes[idx]
   if not token or token == "" then return end
-  local charName = sender and sender:match("^([^-]+)") or sender
+  -- emoteNonTargeted[i] suppresses the sender target so the emote reads
+  -- as a generic action ("/smile") rather than aimed at the speaker
+  -- ("/smile Player"). DoEmote treats nil as "no target". Per-emote
+  -- (not per-watcher) since some emotes make sense aimed at the sender
+  -- and others read better as ambient.
+  local nonTargeted = r.emoteNonTargeted and r.emoteNonTargeted[idx] or false
+  local charName
+  if not nonTargeted then
+    charName = sender and sender:match("^([^-]+)") or sender
+  end
   pcall(DoEmote, token, charName)
+  -- Per-emote counter (Stats). Fired even when the underlying DoEmote
+  -- pcall fails — the user's INTENT was to emote, which is what stats
+  -- track. Listeners get the watcher + sender + emote token.
+  Hooks:Dispatch("OnEmoteFired", watcher, sender, token)
 end
 
 -- ===== Secure-template invite + kick popups =====
@@ -833,13 +948,18 @@ local function dispatch(watcher, channelKey, sender, bnSenderID, trigger)
   local r = watcher.reply
   if not r then return end
 
-  -- Local notification sound first — it's the user's "this matched" cue and
-  -- should fire even if the Reply tab is skipped via noReply, or if all
-  -- reply branches end up silent (e.g. group-channel reply with no group).
+  -- Local notification cues first — they're the user's "this matched" cue
+  -- and should fire even if the Reply tab is skipped via noReply, or if
+  -- all reply branches end up silent (e.g. group-channel reply with no
+  -- group). Sound + icon are sibling notifications; both fire if both are
+  -- configured. IconDisplay no-ops cleanly when no icon is set.
   playNotificationSound(watcher)
+  if addon.IconDisplay and addon.IconDisplay.Show then
+    pcall(function() addon.IconDisplay:Show(watcher) end)
+  end
 
   -- "No reply needed" short-circuits the entire Reply tab: no text, no emote,
-  -- no invite, no kick. The notification sound above is the only effect.
+  -- no invite, no kick. The notification cues above are the only effects.
   if watcher.notifications and watcher.notifications.noReply then return end
 
   local hasText  = type(r.texts)  == "table" and #r.texts  > 0
@@ -853,9 +973,18 @@ local function dispatch(watcher, channelKey, sender, bnSenderID, trigger)
     if hasEmote then doEmoteReply(watcher, sender) end
   end
 
-  if r.invite      then tryInvite(watcher, channelKey, sender, bnSenderID, trigger) end
-  if r.guildInvite then tryGuildInvite(channelKey, sender, bnSenderID, trigger) end
-  if r.kick        then tryKick(channelKey, sender, bnSenderID, trigger) end
+  if r.invite then
+    tryInvite(watcher, channelKey, sender, bnSenderID, trigger)
+    Hooks:Dispatch("OnActionFired", watcher, sender, "invite")
+  end
+  if r.guildInvite then
+    tryGuildInvite(channelKey, sender, bnSenderID, trigger)
+    Hooks:Dispatch("OnActionFired", watcher, sender, "guildInvite")
+  end
+  if r.kick then
+    tryKick(channelKey, sender, bnSenderID, trigger)
+    Hooks:Dispatch("OnActionFired", watcher, sender, "kick")
+  end
 end
 
 -- ===== Per-trigger chat coloring =====
@@ -887,21 +1016,33 @@ local function playerClassColorHex()
   return cachedPlayerClassHex
 end
 
--- Replace-all of `find` inside `s`, invoking replaceFn with the matched
--- substring for each hit. When `caseSensitive` is false (default), matches
--- ignore casing but the replacement is fed the original-cased match so we
--- preserve the message's text. Pure-Lua to sidestep Lua patterns' lack of
--- native case-insensitive matching.
-local function gsubMatch(s, find, replaceFn, caseSensitive)
+-- Replace-all of `find` inside `s` with whole-word semantics, invoking
+-- replaceFn with the original-cased matched substring. Boundary rules mirror
+-- Helpers.matchWholeWord: a phrase that starts/ends with a non-word character
+-- relaxes the corresponding boundary (so "!gg" still matches mid-message).
+-- This keeps the chat-display coloring in lockstep with the actual trigger
+-- match — substrings inside longer words ("test" in "testet") are skipped.
+-- Apostrophe counts as a word char so contractions read as single tokens:
+-- phrase "I" doesn't highlight "I'm", phrase "isn" doesn't highlight in
+-- "isn't". Mirrors Helpers.matchWholeWord's rule so coloring and dispatch
+-- agree on what's a whole-word hit.
+local function isWordChar(ch)
+  return ch ~= "" and ch:match("[%w_']") ~= nil
+end
+
+-- Plain substring replace — counterpart to gsubWholeWord for partial-match mode.
+-- No word-boundary check: every occurrence of `find` inside `s` is wrapped,
+-- including ones inside larger words ("test" inside "testest").
+local function gsubPlain(s, find, replaceFn, caseSensitive)
   if not s or s == "" or not find or find == "" then return s end
   local hay = caseSensitive and s or s:lower()
   local needle = caseSensitive and find or find:lower()
   local out = {}
   local i = 1
   local n = #s
-  local flen = #find
+  local flen = #needle
   while i <= n do
-    local pos = hay:find(needle, i, true) -- plain (non-pattern) search
+    local pos = hay:find(needle, i, true)
     if not pos then
       table.insert(out, s:sub(i))
       break
@@ -909,6 +1050,38 @@ local function gsubMatch(s, find, replaceFn, caseSensitive)
     if pos > i then table.insert(out, s:sub(i, pos - 1)) end
     table.insert(out, replaceFn(s:sub(pos, pos + flen - 1)))
     i = pos + flen
+  end
+  return table.concat(out)
+end
+
+local function gsubWholeWord(s, find, replaceFn, caseSensitive)
+  if not s or s == "" or not find or find == "" then return s end
+  local hay = caseSensitive and s or s:lower()
+  local needle = caseSensitive and find or find:lower()
+  local needLeft = isWordChar(needle:sub(1, 1))
+  local needRight = isWordChar(needle:sub(-1))
+  local out = {}
+  local i = 1
+  local n = #s
+  local flen = #needle
+  while i <= n do
+    local pos = hay:find(needle, i, true)
+    if not pos then
+      table.insert(out, s:sub(i))
+      break
+    end
+    local leftOK  = (not needLeft)  or pos == 1 or not isWordChar(hay:sub(pos - 1, pos - 1))
+    local rightOK = (not needRight) or (pos + flen - 1) == n or not isWordChar(hay:sub(pos + flen, pos + flen))
+    if leftOK and rightOK then
+      if pos > i then table.insert(out, s:sub(i, pos - 1)) end
+      table.insert(out, replaceFn(s:sub(pos, pos + flen - 1)))
+      i = pos + flen
+    else
+      -- Boundary failed; emit one char and keep scanning. We can't jump to
+      -- pos+flen because a valid match may overlap (e.g. "aa" in "aaa").
+      table.insert(out, s:sub(i, pos))
+      i = pos + 1
+    end
   end
   return table.concat(out)
 end
@@ -937,14 +1110,20 @@ local function applyTriggerColoring(message, channelKey)
     then
       local colors = watcher.notifications.triggerColors
       local caseFlags = watcher.triggerCaseSensitive or {}
+      local exactFlags = watcher.triggerExact or {}
+      local partialFlags = watcher.triggerPartial or {}
       for i, phrase in ipairs(watcher.triggers) do
         local c = colors[i]
         if phrase and phrase ~= "" and c and c ~= "" then
-          -- De-dupe per phrase. The dedupe key tracks casing too so a
-          -- case-sensitive rule for "Foo" doesn't get shadowed by an earlier
-          -- case-insensitive rule for "foo".
+          -- De-dupe per phrase. The dedupe key tracks casing AND match mode
+          -- (exact / partial / whole-word) so e.g. an exact rule for "Foo"
+          -- doesn't get shadowed by an earlier whole-word rule for the same
+          -- phrase. exact wins over partial when both ended up set on a row.
           local cs = caseFlags[i] and true or false
-          local key = (cs and "cs:" or "ci:") .. phrase:lower()
+          local ex = exactFlags[i] and true or false
+          local pm = (not ex) and (partialFlags[i] and true or false) or false
+          local modeTag = ex and "ex:" or (pm and "pm:" or "wd:")
+          local key = modeTag .. (cs and "cs:" or "ci:") .. phrase:lower()
           if not seen[key] then
             local hex
             if c == "class" then
@@ -954,7 +1133,7 @@ local function applyTriggerColoring(message, channelKey)
             end
             if hex then
               seen[key] = true
-              table.insert(entries, { phrase = phrase, hex = hex, caseSensitive = cs })
+              table.insert(entries, { phrase = phrase, hex = hex, caseSensitive = cs, exact = ex, partial = pm })
             end
           end
         end
@@ -966,13 +1145,39 @@ local function applyTriggerColoring(message, channelKey)
 
   -- Longest-first so a phrase like "thank you" wins over "thank" when both
   -- are configured — otherwise the outer "thank" wrap would split the longer
-  -- match into uncolorable fragments.
+  -- match into uncolorable fragments. Exact entries also slot into this
+  -- ordering; if one fires it wraps the whole message, but that's only
+  -- possible when the trimmed message equals the phrase, in which case no
+  -- other entry would have anything left to color anyway.
   table.sort(entries, function(a, b) return #a.phrase > #b.phrase end)
 
   for _, e in ipairs(entries) do
-    message = gsubMatch(message, e.phrase, function(match)
-      return "|cff" .. e.hex .. match .. "|r"
-    end, e.caseSensitive)
+    if e.exact then
+      -- Exact match: only color the message when the trimmed message equals
+      -- the configured phrase. This mirrors Helpers.findIn's exact branch so
+      -- the chat display stays in sync with whether the watcher fired.
+      local trimmed = message:match("^%s*(.-)%s*$") or message
+      local matched
+      if e.caseSensitive then
+        matched = (trimmed == e.phrase)
+      else
+        matched = (trimmed:lower() == e.phrase:lower())
+      end
+      if matched then
+        message = "|cff" .. e.hex .. message .. "|r"
+      end
+    elseif e.partial then
+      -- Partial-match mode: plain substring contains, no word boundary check.
+      -- Mirrors Helpers.findIn's partial branch so coloring matches what
+      -- fired.
+      message = gsubPlain(message, e.phrase, function(match)
+        return "|cff" .. e.hex .. match .. "|r"
+      end, e.caseSensitive)
+    else
+      message = gsubWholeWord(message, e.phrase, function(match)
+        return "|cff" .. e.hex .. match .. "|r"
+      end, e.caseSensitive)
+    end
   end
 
   return message
@@ -988,7 +1193,28 @@ end
 -- rest of the args pass through untouched. Return false to keep the line.
 local function chatColoringFilter(_, event, msg, ...)
   if not msg or msg == "" or not EVENT_TO_KEY then return end
-  local channelKey = EVENT_TO_KEY[event]
+  -- CHAT_MSG_CHANNEL serves every world channel. The filter callback's
+  -- vararg starts at arg2 (the event's first vararg is `msg` which we
+  -- already pulled out), so what was arg9 in onChatEvent is select(8, ...)
+  -- here. Same locale-safe fallback via GetChannelName.
+  local channelKey
+  if event == "CHAT_MSG_CHANNEL" then
+    local channelName  = select(8, ...)
+    local channelIndex = select(7, ...)
+    local def = channelName and Constants.WORLD_CHANNEL_BY_NAME[channelName]
+    if not def and channelIndex then
+      for _, candidate in pairs(Constants.WORLD_CHANNEL_BY_NAME) do
+        local myIdx = GetChannelName(candidate.channelName)
+        if myIdx and myIdx > 0 and myIdx == channelIndex then
+          def = candidate
+          break
+        end
+      end
+    end
+    channelKey = def and def.key
+  else
+    channelKey = EVENT_TO_KEY[event]
+  end
   if not channelKey then return end
   local newMsg = applyTriggerColoring(msg, channelKey)
   if newMsg == msg then return end
@@ -1011,8 +1237,13 @@ end
 local function buildEventMap()
   local map = {}
   for _, info in pairs(Constants.CHANNELS) do
-    for _, event in ipairs(info.events) do
-      map[event] = info.key
+    -- World channels all share CHAT_MSG_CHANNEL; mapping that to a single
+    -- key here would clobber the others. The dispatcher resolves world
+    -- channels by inspecting arg9 (channelBaseName) instead.
+    if not info.isWorldChannel then
+      for _, event in ipairs(info.events) do
+        map[event] = info.key
+      end
     end
   end
   return map
@@ -1053,9 +1284,10 @@ function Watchers:ProcessMessage(channelKey, sender, message, bnSenderID)
         if not gated and filtersAllow then
           -- Pass the ORIGINAL message (not lowered) so per-phrase
           -- case-sensitive matching can compare against the source casing.
-          -- findIn lowercases internally as needed. Both exactness and case
-          -- sensitivity are per-trigger arrays parallel to watcher.triggers.
-          local trigger = Helpers.findIn(message, watcher.triggers, watcher.triggerExact, watcher.triggerCaseSensitive)
+          -- findIn lowercases internally as needed. Match mode (exact /
+          -- partial / whole-word) and case-sensitivity are all per-trigger
+          -- arrays parallel to watcher.triggers.
+          local trigger = Helpers.findIn(message, watcher.triggers, watcher.triggerExact, watcher.triggerCaseSensitive, watcher.triggerPartial)
           if trigger then
             dispatch(watcher, channelKey, sender, bnSenderID, trigger)
             recordWatcherCooldown(watcher, sender, bnSenderID)
@@ -1088,7 +1320,28 @@ function Watchers:ForceFire(watcherId, channelKey, sender)
 end
 
 local function onChatEvent(EVENT_TO_KEY, event, ...)
-  local channelKey = EVENT_TO_KEY[event]
+  local channelKey
+  if event == "CHAT_MSG_CHANNEL" then
+    -- Try arg9 (channelBaseName) first — fast and works on English
+    -- clients. Fall back to matching arg8 (channel slot index) against
+    -- GetChannelName(canonical) so the resolve is locale-independent
+    -- and survives the user reordering their channel list.
+    local channelName  = select(9, ...)
+    local channelIndex = select(8, ...)
+    local def = channelName and Constants.WORLD_CHANNEL_BY_NAME[channelName]
+    if not def and channelIndex then
+      for _, candidate in pairs(Constants.WORLD_CHANNEL_BY_NAME) do
+        local myIdx = GetChannelName(candidate.channelName)
+        if myIdx and myIdx > 0 and myIdx == channelIndex then
+          def = candidate
+          break
+        end
+      end
+    end
+    channelKey = def and def.key
+  else
+    channelKey = EVENT_TO_KEY[event]
+  end
   if not channelKey then return end
   local channelDef = Constants.CHANNEL_BY_KEY[channelKey]
 

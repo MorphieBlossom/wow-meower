@@ -3,10 +3,17 @@ local MBLib = addon.MBLib
 
 local OptionsScreen = {}
 
-local function IsAddonInstalled(name)
-  if C_AddOns and C_AddOns.GetAddOnInfo then
-    local resolved = C_AddOns.GetAddOnInfo(name)
-    return resolved ~= nil
+-- True only when `name` is currently loaded into the running session. We
+-- specifically don't use GetAddOnInfo here: that returns a hit for any TOC
+-- on disk, including disabled addons and leftover files from a deleted
+-- folder, which produces false-positive "installed" checkmarks for an addon
+-- the user has actually uninstalled (or just turned off in the AddOns list).
+local function IsAddonLoaded(name)
+  if C_AddOns and C_AddOns.IsAddOnLoaded then
+    return C_AddOns.IsAddOnLoaded(name) and true or false
+  end
+  if _G.IsAddOnLoaded then
+    return _G.IsAddOnLoaded(name) and true or false
   end
   return false
 end
@@ -30,7 +37,7 @@ end
 local function BuildSettingDescription(def)
   local base = def.Description or ""
   local defaultLabel = GetDefaultValueLabel(def)
-  local suffix = "(Default: " .. defaultLabel .. ")"
+  local suffix = MBLib.L.SETTINGS_DEFAULT_SUFFIX_FMT:format(defaultLabel)
   if base == "" then return suffix end
   return base .. "\n" .. suffix
 end
@@ -78,7 +85,7 @@ local function CreateSeparatorBelow(parent, anchor, offsetX, offsetY)
 end
 
 local function CreateAddonRow(parent, lastAnchor, isFirst, info)
-  local installed = IsAddonInstalled(info.name)
+  local loaded = IsAddonLoaded(info.name)
 
   local row = CreateFrame("Frame", nil, parent)
   row:SetHeight(24)
@@ -89,16 +96,19 @@ local function CreateAddonRow(parent, lastAnchor, isFirst, info)
   end
   row:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
 
-  -- Status icon (checkmark if installed, cross otherwise) with hover tooltip.
+  -- Status icon (checkmark if loaded, cross otherwise) with hover tooltip.
+  -- "Loaded" specifically — a disabled or partially-uninstalled addon shows
+  -- as the cross, so the user can re-enable / re-install via the CurseForge
+  -- link branch below.
   local statusBtn = CreateFrame("Button", nil, row)
   statusBtn:SetSize(16, 16)
   statusBtn:SetPoint("LEFT", 0, 0)
   local statusFS = statusBtn:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
   statusFS:SetAllPoints()
-  statusFS:SetText(installed and MBLib.ICON_CHECKMARK or MBLib.ICON_CROSS)
-  local tooltipText = installed
-    and "You already have this addon"
-    or "You don't have this addon yet"
+  statusFS:SetText(loaded and MBLib.ICON_CHECKMARK or MBLib.ICON_CROSS)
+  local tooltipText = loaded
+    and MBLib.L.OPTIONS_OTHER_ADDONS_INSTALLED
+    or MBLib.L.OPTIONS_OTHER_ADDONS_MISSING
   statusBtn:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     GameTooltip:SetText(tooltipText, 1, 1, 1)
@@ -106,15 +116,16 @@ local function CreateAddonRow(parent, lastAnchor, isFirst, info)
   end)
   statusBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-  -- Addon name — always a Blizzard-style Button. Installed addons jump to
-  -- their settings page; missing ones open a CopyPopup with the CurseForge
-  -- author link so the user can grab the download URL.
+  -- Addon name — always a Blizzard-style Button. Loaded addons jump to
+  -- their settings page; everything else (missing, disabled, or partially
+  -- uninstalled) opens a CopyPopup with the CurseForge author link so the
+  -- user can grab the download URL.
   local nameBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
   nameBtn:SetPoint("LEFT", statusBtn, "RIGHT", 6, 0)
   nameBtn:SetText(info.name)
   nameBtn:SetHeight(22)
   nameBtn:SetWidth(nameBtn:GetTextWidth() + 20)
-  if installed then
+  if loaded then
     nameBtn:SetScript("OnClick", function()
       local handler = SlashCmdList[info.name:upper()]
       if handler then handler("settings") end
@@ -123,8 +134,8 @@ local function CreateAddonRow(parent, lastAnchor, isFirst, info)
     nameBtn:SetScript("OnClick", function()
       if MBLib.CopyPopup and MBLib.CopyPopup.Show then
         MBLib.CopyPopup:Show({
-          title       = "Get " .. info.name,
-          description = "Copy the link below and open it in your browser to find this addon on CurseForge.",
+          title       = MBLib.L.OPTIONS_OTHER_ADDONS_GET_FMT:format(info.name),
+          description = MBLib.L.OPTIONS_OTHER_ADDONS_GET_DESC,
           text        = MBLib.AUTHOR_URL,
         })
       end
@@ -139,7 +150,7 @@ local function CreateAddonRow(parent, lastAnchor, isFirst, info)
   desc:SetJustifyH("LEFT")
   desc:SetJustifyV("MIDDLE")
   desc:SetWordWrap(true)
-  desc:SetText("— " .. info.description)
+  desc:SetText(MBLib.L.OPTIONS_DESC_ITEM_FMT:format(info.description))
   local h = desc:GetStringHeight()
   if h and h > row:GetHeight() then row:SetHeight(h + 4) end
 
@@ -156,7 +167,7 @@ local function CreateOtherAddonsList(parent, anchor)
 
   local title = titleBtn:CreateFontString(nil, "ARTWORK", "GameFontNormal")
   title:SetPoint("LEFT", titleBtn, "LEFT", 0, 0)
-  title:SetText("Other Addons by MorphieBlossom:")
+  title:SetText(MBLib.L.OPTIONS_OTHER_ADDONS_TITLE)
 
   -- Fit the hit region to the rendered text. GetStringWidth returns 0 before
   -- the FontString has been through a layout pass (which only happens when
@@ -175,8 +186,8 @@ local function CreateOtherAddonsList(parent, anchor)
   titleBtn:SetScript("OnClick", function()
     if MBLib.CopyPopup and MBLib.CopyPopup.Show then
       MBLib.CopyPopup:Show({
-        title       = "Other addons by MorphieBlossom",
-        description = "Copy the link below and open it in your browser to see all of my addons on CurseForge.",
+        title       = MBLib.L.OPTIONS_OTHER_ADDONS_AUTHOR_TITLE,
+        description = MBLib.L.OPTIONS_OTHER_ADDONS_AUTHOR_DESC,
         text        = MBLib.AUTHOR_URL,
       })
     end
@@ -230,9 +241,9 @@ local function CreateMainFrame()
   local line1 = MBLib.Utils:CreateSeparator(mainFrame, mainFrame, 15, -125)
 
   local creditsData = {
-    "|cffffd200Version:|r " .. (C_AddOns.GetAddOnMetadata(addonName, "Version") or ""),
-    "|cffffd200Author:|r " .. (C_AddOns.GetAddOnMetadata(addonName, "Author") or ""),
-    "|cffffd200Last Updated:|r " .. (C_AddOns.GetAddOnMetadata(addonName, "X-Date") or ""),
+    MBLib.L.OPTIONS_FIELD_VERSION      .. (C_AddOns.GetAddOnMetadata(addonName, "Version") or ""),
+    MBLib.L.OPTIONS_FIELD_AUTHOR       .. (C_AddOns.GetAddOnMetadata(addonName, "Author") or ""),
+    MBLib.L.OPTIONS_FIELD_LAST_UPDATED .. (C_AddOns.GetAddOnMetadata(addonName, "X-Date") or ""),
   }
 
   local topCredits = mainFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
@@ -243,7 +254,7 @@ local function CreateMainFrame()
 
   local contactCTA = mainFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
   contactCTA:SetPoint("TOPLEFT", topCredits, "BOTTOMLEFT", 0, -30)
-  contactCTA:SetText("Questions or issues? Reach out on:")
+  contactCTA:SetText(MBLib.L.OPTIONS_CONTACT_CTA)
 
   local posAnchor = contactCTA
   local function MaybeLink(label, field, prevAnchor, firstOffsetY)
@@ -267,16 +278,17 @@ local function CreateMainFrame()
     if #prevAuthors > 0 then
       local subCredits = mainFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
       subCredits:SetPoint("TOPLEFT", posAnchor, "BOTTOMLEFT", 0, -25)
-      subCredits:SetText("|cffaaaaaaThis is a continuation from the original addon|r |cffffd200"
-        .. predecessor .. "|r |cffaaaaaaby|r "
-        .. table.concat(prevAuthors, " |cffaaaaaa&|r "))
+      subCredits:SetText(MBLib.L.OPTIONS_PREDECESSOR_FMT:format(
+        predecessor,
+        table.concat(prevAuthors, MBLib.L.OPTIONS_PREDECESSOR_AUTHOR_SEP)
+      ))
     end
   end
 
   local line2 = MBLib.Utils:CreateSeparator(mainFrame, mainFrame, 15, -360)
   local cmdTitle = mainFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
   cmdTitle:SetPoint("TOPLEFT", line2, "BOTTOMLEFT", 20, -20)
-  cmdTitle:SetText("Available Chat Commands:")
+  cmdTitle:SetText(MBLib.L.OPTIONS_COMMANDS_TITLE)
   local lastCmd = CreateCommandList(mainFrame, cmdTitle, 10)
 
   local line3 = CreateSeparatorBelow(mainFrame, lastCmd or cmdTitle, 15, -20)
@@ -307,7 +319,7 @@ local function CreateSettingsCategory(parent)
 
   if #visibleGroupOrder == 0 then return end
 
-  local subcategoryName = MBLib.GetSettingsSubcategoryName and MBLib:GetSettingsSubcategoryName() or "Display Settings"
+  local subcategoryName = MBLib.GetSettingsSubcategoryName and MBLib:GetSettingsSubcategoryName() or MBLib.L.SETTINGS_SUBCATEGORY_DEFAULT
   local category, layout = Settings.RegisterVerticalLayoutSubcategory(parent, subcategoryName)
   MBLib._settingsSubcategory = category
 
@@ -338,6 +350,15 @@ local function CreateSettingsCategory(parent)
         Settings.CreateCheckbox(category, setting, settingDescription)
       elseif def.Type == "dropdown" then
         local function GetOptions()
+          -- Give opt-modules a chance to refresh def.Options before
+          -- we build the container. Fonts uses this so the
+          -- Display_FontType dropdown picks up LSM fonts registered
+          -- by other addons after MBLib finished its initial scan.
+          -- No-op when the opt-module isn't loaded (MBLib.Fonts is nil
+          -- for non-font consumers).
+          if MBLib.Fonts and MBLib.Fonts.RefreshOptionsForDef then
+            pcall(MBLib.Fonts.RefreshOptionsForDef, MBLib.Fonts, def)
+          end
           local container = Settings.CreateControlTextContainer()
           for _, opt in ipairs(def.Options or {}) do
             if type(opt) == "table" and opt.name and opt.value then
@@ -401,7 +422,7 @@ local function CreateReleaseNotesCategory(parent)
     MBLib.Changelog:Build(content)
   end
 
-  Settings.RegisterCanvasLayoutSubcategory(parent, releaseFrame, "Release Notes")
+  Settings.RegisterCanvasLayoutSubcategory(parent, releaseFrame, MBLib.L.RELEASE_NOTES_TITLE)
 end
 
 function OptionsScreen:Build()
@@ -416,22 +437,29 @@ function OptionsScreen:Build()
   MBLib._optionsCategory = mainCategory
   MBLib._optionsScreenID = mainCategory:GetID()
 
-  -- Release Notes registers LAST so consumer-registered sub-pages (e.g.
-  -- canvas sub-categories added on PLAYER_LOGIN by the consumer addon)
-  -- sit above it in the Settings list. The Settings API renders children
-  -- in registration order with no built-in reorder primitive, so the only
-  -- reliable way to land Release Notes at the bottom is to defer until
-  -- after consumer PLAYER_LOGIN handlers have run.
-  local function registerReleaseNotes()
+  -- Movers + Release Notes both register on the PLAYER_LOGIN path so
+  -- they land BELOW any consumer-registered sub-pages (Debug,
+  -- Watchers, etc.) which themselves typically defer to PLAYER_LOGIN.
+  -- Movers runs synchronously in this handler, then Release Notes
+  -- runs one frame later via C_Timer.After — meaning the final list
+  -- order is:
+  --     Settings -> <consumer subcategories> -> Movers -> Release Notes.
+  -- The Settings API has no reorder primitive, so registration order
+  -- is the only lever we have. Skipping MoversPanel registration when
+  -- the opt-module isn't loaded keeps non-Movers consumers clean.
+  local function registerLateSubcategories()
+    if MBLib.MoversPanel and MBLib.MoversPanel.Build then
+      pcall(function() MBLib.MoversPanel:Build(mainCategory) end)
+    end
     C_Timer.After(0, function() CreateReleaseNotesCategory(mainCategory) end)
   end
   if IsLoggedIn() then
-    registerReleaseNotes()
+    registerLateSubcategories()
   else
     local f = CreateFrame("Frame")
     f:RegisterEvent("PLAYER_LOGIN")
     f:SetScript("OnEvent", function(frame)
-      registerReleaseNotes()
+      registerLateSubcategories()
       frame:UnregisterEvent("PLAYER_LOGIN")
       frame:SetScript("OnEvent", nil)
     end)

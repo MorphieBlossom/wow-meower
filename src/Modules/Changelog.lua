@@ -2,6 +2,26 @@ local _, addon = ...
 
 addon.MBLib.Changelog:Set({
   {
+    version = "12.0.5.2",
+    date = "2026-06-06",
+    notify = false,
+    categories = {
+      ["New"] = {
+        "Trigger config: New per-trigger \"Partial match\" checkbox — when ticked, the phrase matches anywhere inside a word (e.g. \"meow\" triggers on \"meower\"). Mutually exclusive with \"Exact match\".",
+        "Notifications: New per-watcher \"Show icon on trigger\" config. Pick any in-game icon (search by name or ID), set its size and fade duration, and position it anywhere on screen via the Mover button.",
+        "Movers: A new options page where you can manage and reposition every configured display frame from one place.",
+        "Reply placeholders: New {purr} token — substitutes a random cat-flavored action (*purr*, *purrs*, *purrs softly*) into your reply text each time the watcher fires.",
+      },
+      ["Changed"] = {
+        "Notifications tab: Sound, Icon, and Coloring sections are now collapsible. Each section has a master checkbox; unticking it hides the section's controls and clears its data so the watcher cleanly stops emitting that signal.",
+        "Reply tab: Text reply, Emote reply, and Actions sections are now collapsible — same pattern as Notifications. New watchers open with all three sections collapsed; tick a section's master checkbox to configure it.",
+      },
+      ["Fixed"] = {
+        "Sound-picker speaker icons no longer leak into other Blizzard / addon dropdowns; the speaker now only appears in the watcher's notification sound dropdown.",
+      },
+    },
+  },
+  {
     version = "12.0.5.1",
     date = "2026-06-04",
     notify = true,

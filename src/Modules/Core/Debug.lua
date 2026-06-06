@@ -65,25 +65,27 @@ end
 function Debug:SetEnabled(on)
   if not dbReady() then return end
   addon.MBLib._db.DebugMode = on and true or false
+  -- Mirror into MBLib so opt-modules that gate on debug (the icon
+  -- picker's auto-dump pipeline, for instance) self-toggle without
+  -- needing to register a callback.
+  if addon.MBLib.SetDebugEnabled then
+    addon.MBLib:SetDebugEnabled(on)
+  end
 end
 
 local DATE_PRESETS = {
   { value = "real",      label = "Real (system date)" },
   { value = "april1",    label = "April 1 (April Fool's)" },
-  { value = "halloween", label = "October 31 (Halloween)" },
   { value = "catday",    label = "August 8 (Cat Day)" },
   { value = "pirate",    label = "September 19 (Pirate Day)" },
-  { value = "newyear",   label = "January 1 (New Year)" },
-  { value = "christmas", label = "December 25 (Christmas)" },
+  { value = "halloween", label = "October 31 (Halloween)" },
 }
 
 local DATE_BUILDERS = {
   april1    = function() return { year = 2026, month = 4,  day = 1 } end,
-  halloween = function() return { year = 2026, month = 10, day = 31 } end,
   catday    = function() return { year = 2026, month = 8,  day = 8 } end,
   pirate    = function() return { year = 2026, month = 9,  day = 19 } end,
-  newyear   = function() return { year = 2026, month = 1,  day = 1 } end,
-  christmas = function() return { year = 2026, month = 12, day = 25 } end,
+  halloween = function() return { year = 2026, month = 10, day = 31 } end,
 }
 
 local realGetNow = nil -- captured on first override
@@ -329,6 +331,13 @@ function Debug:Init()
       desc = "Toggle debug mode. Adds a Debug page in Settings (requires /reload after toggling).",
       func = slashHandler,
     })
+  end
+
+  -- Sync the initial debug state into MBLib. Opt-modules that gate on
+  -- it (IconPicker's auto-dump, for instance) read MBLib:IsDebugEnabled
+  -- and handle themselves — no per-consumer plumbing.
+  if addon.MBLib and addon.MBLib.SetDebugEnabled then
+    addon.MBLib:SetDebugEnabled(self:IsEnabled())
   end
 
   if self:IsEnabled() then

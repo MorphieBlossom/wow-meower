@@ -1,6 +1,6 @@
 # <img src="https://raw.githubusercontent.com/MorphieBlossom/wow-meower/refs/heads/main/media/meower-icon.png" width="50" height="50"> Meower
 
-### Version 12.0.5.1 - available for World of Warcraft ![Version](https://img.shields.io/badge/version-12.0.5-blue)
+### Version 12.0.5.2 - available for World of Warcraft ![Version](https://img.shields.io/badge/version-12.0.5-blue)
 
 👉 View the [changelog here](https://raw.githubusercontent.com/MorphieBlossom/wow-meower/main/CHANGELOG.md)
 
@@ -23,7 +23,9 @@ _If you have questions, suggestions or encountering issues - feel free to reach 
 
 ### Additionally
 👉 Randomize replies by adding multiple, so your character doesn't repeat itself.  
-👉 Gate the trigger with optional filters (such as): Current zone, Friends only, Time of day, Day of week, Druid shapeshift form.
+👉 Gate the trigger with optional filters (such as): Current zone, Friends only, Time of day, Day of week, Druid shapeshift form.  
+👉 Get a heads-up when a watcher matches — play a sound, pop an icon on screen, or color-highlight the matched phrase right in chat.  
+👉 Become an all time professional cat.
 
 ## __It will not__:
 
@@ -43,5 +45,7 @@ Open the settings via either:
 You can configure:
 
 - **Watchers** — add, edit, activate / deactivate, or delete watchers.
-- **Additional settings** — Change the display or protect you from spamming chat.
+- **Movers** — reposition every on-screen display frame from one place.
+- **Stats** — see how often each watcher fires, who triggers them most, and which replies and emotes you send the most.
+- **Additional settings** — change the display or protect you from spamming chat.
 - Get a draggable **macro button** from the settings page — drop it onto any action bar for a one-click shortcut.

@@ -60,6 +60,38 @@ Constants.CHANNELS = {
     replyChatType = "INSTANCE_CHAT",
     isGroupChannel = true
   },
+  -- World/city channels. They all share the CHAT_MSG_CHANNEL event; the
+  -- dispatcher reads CHAT_MSG_CHANNEL's arg9 (channelBaseName) to figure
+  -- out which one this row corresponds to. SendChatMessage uses chat
+  -- type "CHANNEL" with a channelIndex resolved via GetChannelName(name)
+  -- at fire time.
+  GENERAL = {
+    key = "cg",
+    label = "General",
+    events = { "CHAT_MSG_CHANNEL" },
+    replyChatType = "CHANNEL",
+    channelName = "General",
+    isGroupChannel = false,
+    isWorldChannel = true,
+  },
+  TRADE = {
+    key = "ct",
+    label = "Trade",
+    events = { "CHAT_MSG_CHANNEL" },
+    replyChatType = "CHANNEL",
+    channelName = "Trade",
+    isGroupChannel = false,
+    isWorldChannel = true,
+  },
+  SERVICES = {
+    key = "cs",
+    label = "Services",
+    events = { "CHAT_MSG_CHANNEL" },
+    replyChatType = "CHANNEL",
+    channelName = "Services",
+    isGroupChannel = false,
+    isWorldChannel = true,
+  },
 }
 
 Constants.CHANNEL_ORDER = {
@@ -71,6 +103,9 @@ Constants.CHANNEL_ORDER = {
   Constants.CHANNELS.PARTY,
   Constants.CHANNELS.RAID,
   Constants.CHANNELS.INSTANCE,
+  Constants.CHANNELS.GENERAL,
+  Constants.CHANNELS.TRADE,
+  Constants.CHANNELS.SERVICES,
 }
 
 Constants.CHANNEL_BY_KEY = {}
@@ -78,7 +113,16 @@ for _, def in pairs(Constants.CHANNELS) do
   Constants.CHANNEL_BY_KEY[def.key] = def
 end
 
-Constants.REPLY_CHANNELS = { "same", "w", "g", "s", "p", "i", "r", "e" }
+-- World channels share CHAT_MSG_CHANNEL; the dispatcher resolves which one
+-- fired by matching arg9 (channelBaseName) against this lookup.
+Constants.WORLD_CHANNEL_BY_NAME = {}
+for _, def in pairs(Constants.CHANNELS) do
+  if def.isWorldChannel and def.channelName then
+    Constants.WORLD_CHANNEL_BY_NAME[def.channelName] = def
+  end
+end
+
+Constants.REPLY_CHANNELS = { "same", "w", "g", "s", "p", "i", "r", "e", "cg", "ct", "cs" }
 Constants.REPLY_CHANNEL_LABEL = {
   same = "Same channel",
   w    = "Whisper",
@@ -88,12 +132,25 @@ Constants.REPLY_CHANNEL_LABEL = {
   i    = "Instance",
   r    = "Raid",
   e    = "Emote",
+  cg   = "General",
+  ct   = "Trade",
+  cs   = "Services",
 }
 
 Constants.PLACEHOLDERS = {
   { key = "sender",  doc = "Sender character name (BattleTag for BNet whispers)." },
   { key = "trigger", doc = "The matched phrase, verbatim from your trigger list." },
   { key = "channel", doc = "Label of the channel the trigger fired in (Whisper, Party, Raid, ...)." },
+  { key = "purr",    doc = "A random cat-flavored action — *purr*, *purrs*, or *purrs softly*." },
+}
+
+-- Pool the {purr} placeholder picks from at fire time. Plain strings sent
+-- inline with the reply, so authors can drop {purr} mid-sentence and have
+-- a different flavor each fire.
+Constants.PURR_PHRASES = {
+  "*purr*",
+  "*purrs*",
+  "*purrs softly*",
 }
 
 Constants.FRIENDS_MODES = { "anyone", "friends", "strangers" }
@@ -183,6 +240,15 @@ Constants.NEW_FILTER_DEFAULTS = newFilterDefaults
 -- IDs verified against https://www.wowhead.com/sounds (URL form /sound=ID/...);
 -- add new entries only after confirming the ID resolves to the right clip.
 Constants.SOUND_NONE = 0
+
+-- Icon notification defaults (per-watcher; in pixels and seconds).
+-- Min/Max bound the sliders in the edit form and the Mover size slider.
+Constants.ICON_DEFAULT_SIZE = 48
+Constants.ICON_MIN_SIZE     = 10
+Constants.ICON_MAX_SIZE     = 200
+Constants.ICON_DEFAULT_FADE = 3
+Constants.ICON_MIN_FADE     = 1
+Constants.ICON_MAX_FADE     = 30
 Constants.SOUNDS = {
   { value = 12867,         label = "Alarm Clock" },
   { value = 10030,         label = "Bloodlust" },
@@ -214,13 +280,30 @@ function Constants.NEW_WATCHER_DEFAULTS()
     -- (after trim) must equal the phrase; false/nil means whole-word substring
     -- match anywhere in the message — the historical default.
     triggerExact = {},
+    -- Parallel to `triggers`: boolean per phrase. true means partial-match
+    -- (plain substring contains, no word-boundary check), so "test" matches
+    -- inside "testest". false/nil means whole-word. Mutually exclusive with
+    -- triggerExact at the UI layer.
+    triggerPartial = {},
     channels = {},
     onlyLead = false,
     reply = {
+      -- Per-section master toggles. Same collapsible UX as the Notifications
+      -- tab: each section is hidden by default; ticking the master reveals
+      -- the controls; unticking clears the section's data so the reply
+      -- pipeline naturally drops it at fire time.
+      textEnabled    = false,
+      emoteEnabled   = false,
+      actionsEnabled = false,
       texts = {},
       ch = "same",
       emotes = {},
       emoteFirst = false,
+      -- Parallel array to `emotes`: per-row boolean. When true for an
+      -- emote, DoEmote is invoked without the sender target so it reads
+      -- as a generic action ("/smile") instead of aimed at the speaker
+      -- ("/smile Player"). Default empty — every emote starts targeted.
+      emoteNonTargeted = {},
       invite = false,
       inviteConfirm = false,
       inviteQueue = true,
@@ -230,10 +313,26 @@ function Constants.NEW_WATCHER_DEFAULTS()
     notifications = {
       sound = Constants.SOUND_NONE,
       noReply = false,
+      -- Per-section master toggles. Each section's controls are only visible
+      -- (and only honored at fire time, by virtue of cleared data) when the
+      -- corresponding flag is true. Unticking the master clears the section's
+      -- data; ticking it re-opens an empty section the user can configure.
+      soundEnabled    = false,
+      iconEnabled     = false,
+      coloringEnabled = false,
       -- Per-trigger chat coloring. Indexed alongside `triggers`. Each entry
       -- is one of: nil/"" (no coloring), "class" (use sender's class color),
       -- or a 6-digit lowercase hex RRGGBB (no "#" prefix, no alpha).
       triggerColors = {},
+      -- Icon notification. fileID is a numeric FileDataID (or nil for "no
+      -- icon"); position is the anchor tuple stored by MBLib.Movers. Size
+      -- in pixels (square); fadeSeconds is the visible-hold duration.
+      icon = {
+        fileID      = nil,
+        size        = Constants.ICON_DEFAULT_SIZE,
+        fadeSeconds = Constants.ICON_DEFAULT_FADE,
+        position    = nil, -- {point, relativePoint, xOfs, yOfs}; first Mover save populates this
+      },
     },
     filters = newFilterDefaults(),
   }

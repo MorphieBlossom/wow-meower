@@ -90,32 +90,64 @@ function Update-ChangelogFromLua {
     $dateMatch = [regex]::Match($entryText, 'date\s*=\s*"(?<date>[^"]+)"')
     $date = if ($dateMatch.Success) { $dateMatch.Groups['date'].Value } else { '' }
 
-    $catsText = ''
-    $catsPos = $entryText.IndexOf('categories')
-    if ($catsPos -ge 0) {
-      $catsBrace = $entryText.IndexOf('{', $catsPos)
-      if ($catsBrace -ge 0) {
+    $categoriesText = ''
+    $categoriesPos = $entryText.IndexOf('categories')
+    if ($categoriesPos -ge 0) {
+      $categoriesBrace = $entryText.IndexOf('{', $categoriesPos)
+      if ($categoriesBrace -ge 0) {
         $depth2 = 0
-        $catEnd = -1
-        for ($j = $catsBrace; $j -lt $entryText.Length; $j++) {
+        $categoriesEnd = -1
+        for ($j = $categoriesBrace; $j -lt $entryText.Length; $j++) {
           switch ($entryText[$j]) { '{' { $depth2++ } '}' { $depth2-- } }
-          if ($depth2 -eq 0) { $catEnd = $j; break }
+          if ($depth2 -eq 0) { $categoriesEnd = $j; break }
         }
-        if ($catEnd -ge 0) { $catsText = $entryText.Substring($catsBrace + 1, $catEnd - $catsBrace - 1) }
+        if ($categoriesEnd -ge 0) { $categoriesText = $entryText.Substring($categoriesBrace + 1, $categoriesEnd - $categoriesBrace - 1) }
       }
     }
 
-    $catsTextNorm = $catsText -replace "'", '"'
-
-    $catPattern = '(?s)\[\s*"(?<cat>[^"]+)"\s*\]\s*=\s*\{(?<items>.*?)\}'
-    $cats = [regex]::Matches($catsTextNorm, $catPattern)
+    # Find each `["New"] = {` (or "Changed", "Fixed", ...) header, then walk
+    # forward with depth tracking that respects Lua string literals to locate
+    # the matching `}`. The previous non-greedy regex (`.*?\}`) stopped at the
+    # FIRST `}`, which broke items containing curly tokens like "{purr}" (the
+    # embedded `}` closed the block early). We also do NOT swap `'` -> `"`
+    # here: both the header and item patterns require Lua double-quoted
+    # strings already, and a global swap mangled apostrophes inside content
+    # ("section's controls" turned into "section"s controls" and the item
+    # regex split on it).
+    $categoryHeaderPattern = '(?s)\[\s*"(?<category>[^"]+)"\s*\]\s*=\s*\{'
+    $categoryHeaderMatches = [regex]::Matches($categoriesText, $categoryHeaderPattern)
+    $categories = @()
+    foreach ($ch in $categoryHeaderMatches) {
+      $openBrace = $ch.Index + $ch.Length - 1
+      $depth3 = 0
+      $closeBrace = -1
+      $inStr = $false
+      $strQuote = ''
+      for ($p = $openBrace; $p -lt $categoriesText.Length; $p++) {
+        $ch2 = $categoriesText[$p]
+        if ($inStr) {
+          if ($ch2 -eq '\') { $p++; continue }
+          if ($ch2 -eq $strQuote) { $inStr = $false }
+        } else {
+          if ($ch2 -eq '"' -or $ch2 -eq "'") { $inStr = $true; $strQuote = $ch2 }
+          elseif ($ch2 -eq '{') { $depth3++ }
+          elseif ($ch2 -eq '}') {
+            $depth3--
+            if ($depth3 -eq 0) { $closeBrace = $p; break }
+          }
+        }
+      }
+      if ($closeBrace -lt 0) { continue }
+      $itemsBody = $categoriesText.Substring($openBrace + 1, $closeBrace - $openBrace - 1)
+      $categories += [pscustomobject]@{ CategoryName = $ch.Groups['category'].Value; Items = $itemsBody }
+    }
 
     $block = '### `' + $ver + '` (' + $date + ')'+ "`r`n"
-    foreach ($c in $cats) {
-      $catName = $c.Groups['cat'].Value
-      $heading = "**$catName**"
+    foreach ($c in $categories) {
+      $categoryName = $c.CategoryName
+      $heading = "**$categoryName**"
       $block += $heading + "`r`n"
-      $itemsText = $c.Groups['items'].Value
+      $itemsText = $c.Items
       # Allow Lua-style escapes inside the string (\" \\ etc.). The previous
       # naive `[^"]*?` pattern broke any entry containing an embedded \" by
       # treating the escape as a string terminator, splitting one bullet

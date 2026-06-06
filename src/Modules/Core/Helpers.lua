@@ -7,8 +7,12 @@ local Helpers = {}
 -- contains. Both args must already be lowercased. Phrases that start/end with a
 -- non-word character (e.g. "!gg", "f*ck") relax the corresponding boundary.
 
+-- Treats the ASCII apostrophe as a word char so contractions read as single
+-- tokens: phrase "I" must NOT match inside "I'm", phrase "isn" must NOT
+-- match inside "isn't". Without this, the matcher saw the apostrophe as a
+-- word boundary and accepted those as whole-word hits.
 local function isWordChar(ch)
-  return ch ~= "" and ch:match("[%w_]") ~= nil
+  return ch ~= "" and ch:match("[%w_']") ~= nil
 end
 
 function Helpers.matchWholeWord(lower, phraseLower)
@@ -25,15 +29,21 @@ function Helpers.matchWholeWord(lower, phraseLower)
   end
 end
 
--- Returns the first phrase from `list` that matches `message`, or nil. Both
--- exactness and case-sensitivity are now per-phrase (parallel arrays):
+-- Returns the first phrase from `list` that matches `message`, or nil. All
+-- per-phrase flags are parallel arrays indexed alongside `list`:
 --   exactList[i]            truthy -> the trimmed message must equal phrase i
---                           else   -> phrase i needs to appear as a whole word
+--   partialList[i]          truthy -> phrase i needs to appear as a plain
+--                                     substring (no word-boundary check —
+--                                     "test" matches inside "testest")
+--   (neither flag)                 -> phrase i needs to appear as a whole word
+--                                     (the historical default)
 --   caseSensitiveList[i]    truthy -> match phrase i with exact casing
 --                           else   -> match phrase i case-insensitively
+-- exact and partial are mutually exclusive at the UI layer; if both end up
+-- set on the same row anyway, exact wins (it's the stricter constraint).
 -- The phrase is returned in its original casing so callers can substitute it
 -- back into reply templates verbatim.
-function Helpers.findIn(message, list, exactList, caseSensitiveList)
+function Helpers.findIn(message, list, exactList, caseSensitiveList, partialList)
   if not list then return nil end
   local lower = message:lower()
   local lowerTrimmed = lower:match("^%s*(.-)%s*$") or lower
@@ -43,12 +53,20 @@ function Helpers.findIn(message, list, exactList, caseSensitiveList)
     if phrase ~= "" then
       local cs = caseSensitiveList and caseSensitiveList[i] or false
       local ex = exactList and exactList[i] or false
+      local pm = partialList and partialList[i] or false
       local hit
       if ex then
         if cs then
           hit = (origTrimmed == phrase)
         else
           hit = (lowerTrimmed == phrase:lower())
+        end
+      elseif pm then
+        -- Plain substring contains, no word boundary requirement.
+        if cs then
+          hit = (message:find(phrase, 1, true) ~= nil)
+        else
+          hit = (lower:find(phrase:lower(), 1, true) ~= nil)
         end
       else
         if cs then

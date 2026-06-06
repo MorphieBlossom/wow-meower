@@ -1,5 +1,5 @@
 ## Interface: 120005, 120007
-## Version: 12.0.5.1
+## Version: 12.0.5.2
 ## X-Date: 2026-06-04
 
 ## Title: Meower
@@ -27,5 +27,8 @@ Modules\Core\Filters.lua
 Modules\Core\Watchers.lua
 Modules\Core\Debug.lua
 Modules\Core\WatchersPanel.lua
+Modules\Display\IconDisplay.lua
 Modules\Changelog.lua
-Modules\Extras\Seasonal.lua
+Modules\Extras\Stats.lua
+Modules\Extras\StatsPanel.lua
+Modules\Extras\Woofer.lua

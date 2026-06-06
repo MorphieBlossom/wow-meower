@@ -42,8 +42,22 @@ MBLib._predecessor = nil
 MBLib._initialized = false
 MBLib._db = nil
 MBLib._optionsScreenID = nil
+MBLib._debugEnabled = false
 
--- Shared constants (colors, icons, addon list) live in Modules/Constants.lua,
+-- Generic "debug mode is on" toggle. Opt-modules (the icon-picker dump
+-- pipeline, for instance) check this to gate their developer-facing
+-- behavior. Consumer addons that ship their own debug page mirror their
+-- toggle into here via MBLib:SetDebugEnabled so MBLib's internals can
+-- self-gate without each opt-module having to register a callback.
+function MBLib:IsDebugEnabled()
+  return self._debugEnabled == true
+end
+
+function MBLib:SetDebugEnabled(on)
+  self._debugEnabled = on and true or false
+end
+
+-- Shared constants (colors, icons, addon list) live in CoreModules/Constants.lua,
 -- loaded immediately after this file by MBLib.xml.
 
 -- Add an extra slash trigger to the addon. The default trigger `/<addonname>` is
@@ -88,7 +102,10 @@ function MBLib:SetSettingsSubcategoryName(name)
 end
 
 function MBLib:GetSettingsSubcategoryName()
-  return self._settingsSubcategoryName or "Display Settings"
+  -- Hard fallback "Display Settings" stays here in addition to L because
+  -- GetSettingsSubcategoryName may be reached before Strings.lua loads in
+  -- pathological consumer code paths.
+  return self._settingsSubcategoryName or (self.L and self.L.SETTINGS_SUBCATEGORY_DEFAULT) or "Display Settings"
 end
 
 -- Bootstrap: open SavedVariables, init Settings, register slash handlers, build the
