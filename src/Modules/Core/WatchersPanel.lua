@@ -433,6 +433,9 @@ end
 -- In/Emote/Actions under Reply). A blank-ish line separates the trigger group
 -- from the reply group. When only actions are configured (no text/emote), the
 -- Actions line sits at the top level — there is nothing to nest it under.
+--
+-- Exposed on the Panel below (Panel.DescribeWatcher) so the import-preview
+-- popup can render the same formatting as the live list row.
 local function describeWatcher(w)
   local lines = {}
 
@@ -777,21 +780,30 @@ local function buildListRow(content, watcher, yOffset, infoLines, height, minima
   -- the action). Edit + Delete remain on the right; the -109 keeps roughly
   -- the same right margin (~38 px) as the pre-removal layout so the pair
   -- doesn't crowd the panel edge.
+  -- Edit + Export + Delete chain. Edit anchors with enough right-edge
+  -- room for all three buttons (3 * 65 + 2 gaps of 6 = 207); the header
+  -- hit-area meets Edit's left edge with a small gap below.
   local editBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
   editBtn:SetSize(65, 22)
-  editBtn:SetPoint("TOPRIGHT", -109, -2)
+  editBtn:SetPoint("TOPRIGHT", -180, -2)
 
-  -- Now that the Edit button exists, finish anchoring the header hit-area:
-  -- its right edge meets the Edit button's left, with a small gap so a
-  -- careless click near Edit doesn't accidentally toggle expansion.
   headerBtn:SetPoint("BOTTOMRIGHT", editBtn, "BOTTOMLEFT", -8, 0)
   editBtn:SetText(L.LIST_ROW_EDIT_BTN)
   editBtn:SetScript("OnClick", function() enterEdit(watcher.id) end)
   setTooltip(editBtn, L.LIST_ROW_EDIT_TOOLTIP_TITLE, L.LIST_ROW_EDIT_TOOLTIP_DESC)
 
+  local exportBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+  exportBtn:SetSize(65, 22)
+  exportBtn:SetPoint("LEFT", editBtn, "RIGHT", 6, 0)
+  exportBtn:SetText(L.LIST_ROW_EXPORT_BTN)
+  exportBtn:SetScript("OnClick", function()
+    if Panel._exportWatcher then Panel:_exportWatcher(watcher) end
+  end)
+  setTooltip(exportBtn, L.LIST_ROW_EXPORT_TOOLTIP_TITLE, L.LIST_ROW_EXPORT_TOOLTIP_DESC)
+
   local delBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
   delBtn:SetSize(65, 22)
-  delBtn:SetPoint("LEFT", editBtn, "RIGHT", 6, 0)
+  delBtn:SetPoint("LEFT", exportBtn, "RIGHT", 6, 0)
   delBtn:SetText(L.LIST_ROW_DELETE_BTN)
   delBtn:SetScript("OnClick", function()
     Panel._expanded[watcher.id] = nil
@@ -828,11 +840,54 @@ local function buildListView(parent)
   addBtn:SetSize(110, 24)
   addBtn:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -10)
   addBtn:SetText(L.LIST_ADD_NEW_BTN)
+  addBtn:SetMotionScriptsWhileDisabled(true)
   addBtn:SetScript("OnClick", function() enterEdit(nil) end)
   setTooltip(addBtn, L.LIST_ADD_NEW_TOOLTIP_TITLE, L.LIST_ADD_NEW_TOOLTIP_DESC)
+  frame.addBtn = addBtn
+
+  -- Import button next to Add new — accepts a previously-exported
+  -- watcher (envelope kind "MeowerWatcher") and after a successful
+  -- validation asks the user which set to drop it into.
+  local importBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  importBtn:SetSize(110, 24)
+  importBtn:SetPoint("LEFT", addBtn, "RIGHT", 8, 0)
+  importBtn:SetText(L.LIST_IMPORT_BTN)
+  importBtn:SetMotionScriptsWhileDisabled(true)
+  importBtn:SetScript("OnClick", function()
+    if Panel._showWatcherImport then Panel:_showWatcherImport() end
+  end)
+  setTooltip(importBtn, L.LIST_IMPORT_TOOLTIP_TITLE, L.LIST_IMPORT_TOOLTIP_DESC)
+  frame.importBtn = importBtn
 
   -- (The "Get macro" button moved to the addon's main settings page, served
   -- by MBLib.MacroButton. See src/Init.lua's SetMacroButton call.)
+
+  -- Tab buttons sit BELOW the action row, anchored just above the
+  -- first horizontal separator so they visually merge into the list
+  -- area beneath them — the canonical Blizzard tab style where the
+  -- selected tab's body extends downward into the content. Label of
+  -- the second tab tracks the active profile name and is rebuilt by
+  -- refreshList on every profile flip / rename.
+  local globalTabBtn = CreateFrame("Button", nil, frame, "PanelTopTabButtonTemplate")
+  globalTabBtn:SetID(1)
+  globalTabBtn:SetText(L.LIST_TAB_GLOBAL)
+  PanelTemplates_TabResize(globalTabBtn, 0)
+  globalTabBtn:SetScript("OnClick", function()
+    Panel.listTab = "global"
+    refreshList()
+  end)
+  frame.globalTabBtn = globalTabBtn
+
+  local profileTabBtn = CreateFrame("Button", nil, frame, "PanelTopTabButtonTemplate")
+  profileTabBtn:SetID(2)
+  profileTabBtn:SetText(L.LIST_TAB_PROFILE_FALLBACK)
+  PanelTemplates_TabResize(profileTabBtn, 0)
+  profileTabBtn:SetPoint("LEFT", globalTabBtn, "RIGHT", -3, 0)
+  profileTabBtn:SetScript("OnClick", function()
+    Panel.listTab = "profile"
+    refreshList()
+  end)
+  frame.profileTabBtn = profileTabBtn
 
   -- Session-only toggle (not persisted to SavedVariables) — when on, the list
   -- filter in refreshList skips watchers with .enabled == false. `frame` is
@@ -852,11 +907,16 @@ local function buildListView(parent)
   setTooltip(hideInactiveCheck, L.LIST_HIDE_INACTIVE_TOOLTIP_TITLE, L.LIST_HIDE_INACTIVE_TOOLTIP_DESC)
   frame.hideInactiveCheck = hideInactiveCheck
 
+  -- Leave room above the separator for the tab row — the tabs anchor
+  -- their bottom edge to the top of this line so the selected tab's
+  -- body merges visually into the list area below.
   local topSep = frame:CreateTexture(nil, "ARTWORK")
   topSep:SetHeight(1)
-  topSep:SetPoint("TOPLEFT", addBtn, "BOTTOMLEFT", 0, -10)
+  topSep:SetPoint("TOPLEFT", addBtn, "BOTTOMLEFT", 0, -42)
   topSep:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -30, 0)
   topSep:SetColorTexture(1, 1, 1, 0.3)
+
+  globalTabBtn:SetPoint("BOTTOMLEFT", topSep, "TOPLEFT", 18, 0)
 
   local scrollFrame = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
   scrollFrame:SetPoint("TOPLEFT", topSep, "BOTTOMLEFT", 0, -8)
@@ -873,8 +933,67 @@ end
 refreshList = function()
   if not Panel._listFrame then return end
   releaseListRows()
-  local content     = Panel._listFrame.content
-  local allWatchers = addon.Watchers:GetAll()
+  local content = Panel._listFrame.content
+
+  -- Active tab picks which bucket we render. "global" -> account
+  -- watchers, "profile" -> active profile's watchers. Default to
+  -- "profile" since that's where new watchers land unless the user
+  -- ticks Account-wide.
+  if Panel.listTab ~= "global" and Panel.listTab ~= "profile" then
+    Panel.listTab = "profile"
+  end
+  local W = addon.Watchers
+  local allWatchers
+  if Panel.listTab == "global" then
+    allWatchers = W.GetAccount and W:GetAccount() or {}
+  else
+    allWatchers = W.GetProfile and W:GetProfile() or W:GetAll()
+  end
+
+  -- Sync tab button visual state + relabel the profile tab to the active
+  -- profile name (or a placeholder when profiles is somehow off).
+  local f = Panel._listFrame
+  local P = addon.MBLib and addon.MBLib.Profiles
+  local activeName = P and P.GetActiveName and P:GetActiveName() or nil
+  if f.globalTabBtn and f.profileTabBtn then
+    f.profileTabBtn:SetText(activeName
+      and string.format(L.LIST_TAB_PROFILE_FMT, activeName)
+      or L.LIST_TAB_PROFILE_FALLBACK)
+    PanelTemplates_TabResize(f.profileTabBtn, 0)
+    PanelTemplates_DeselectTab(f.globalTabBtn)
+    PanelTemplates_DeselectTab(f.profileTabBtn)
+    if Panel.listTab == "global" then
+      PanelTemplates_SelectTab(f.globalTabBtn)
+    else
+      PanelTemplates_SelectTab(f.profileTabBtn)
+    end
+  end
+
+  -- Gate the Add / Import buttons on whether watchers can actually be
+  -- saved into the active tab. On the Profile tab with no profile
+  -- selected, persisting a new watcher would lose the data on /reload
+  -- (the active profile table doesn't exist). Disable both buttons and
+  -- surface a tooltip explaining the fix.
+  local profileTabBlocked = (Panel.listTab == "profile") and (activeName == nil)
+  if f.addBtn then
+    f.addBtn:SetEnabled(not profileTabBlocked)
+    f.addBtn:SetMotionScriptsWhileDisabled(true)
+    if profileTabBlocked then
+      setTooltip(f.addBtn, L.LIST_ADD_NEW_TOOLTIP_TITLE, L.LIST_NO_PROFILE_TOOLTIP)
+    else
+      setTooltip(f.addBtn, L.LIST_ADD_NEW_TOOLTIP_TITLE, L.LIST_ADD_NEW_TOOLTIP_DESC)
+    end
+  end
+  if f.importBtn then
+    f.importBtn:SetEnabled(not profileTabBlocked)
+    f.importBtn:SetMotionScriptsWhileDisabled(true)
+    if profileTabBlocked then
+      setTooltip(f.importBtn, L.LIST_IMPORT_TOOLTIP_TITLE, L.LIST_NO_PROFILE_TOOLTIP)
+    else
+      setTooltip(f.importBtn, L.LIST_IMPORT_TOOLTIP_TITLE, L.LIST_IMPORT_TOOLTIP_DESC)
+    end
+  end
+
   Panel._expanded   = Panel._expanded or {}
 
   local minimalistic = MBLib.Settings and MBLib.Settings:Get("MinimalisticList") and true or false
@@ -1127,7 +1246,13 @@ local function buildEditForm(parent)
   nameDesc:SetWidth(INNER_WIDTH)
   nameDesc:SetJustifyH("LEFT")
 
-  local nameInput = makeInput(triggerPanel, INNER_WIDTH)
+  -- Name input takes the left ~70% of the row; the accountWide checkbox
+  -- sits to the right with a clear "Account-wide" label so the user can
+  -- decide on the storage bucket at the same time they're naming the
+  -- watcher. The input shrinks slightly to make room — the freed space
+  -- gets a tooltip-attached checkbox with the long-form explanation.
+  local NAME_INPUT_W = INNER_WIDTH - 180
+  local nameInput = makeInput(triggerPanel, NAME_INPUT_W)
   nameInput:SetPoint("TOPLEFT", nameDesc, "BOTTOMLEFT", 0, -8)
   nameInput:SetScript("OnTextChanged", function(self)
     if Panel.state then Panel.state.name = self:GetText() or "" end
@@ -1138,6 +1263,20 @@ local function buildEditForm(parent)
     Panel:updateSaveButton()
   end)
   frame.nameInput = nameInput
+
+  local accountWideCb = makeCheckbox(triggerPanel, L.EDIT_ACCOUNT_WIDE_LABEL)
+  accountWideCb:SetPoint("LEFT", nameInput, "RIGHT", 12, 0)
+  accountWideCb:SetScript("OnClick", function(self)
+    if Panel.state then Panel.state.accountWide = self:GetChecked() and true or false end
+  end)
+  accountWideCb:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText(L.EDIT_ACCOUNT_WIDE_TOOLTIP_TITLE, 1, 1, 1)
+    GameTooltip:AddLine(L.EDIT_ACCOUNT_WIDE_TOOLTIP_DESC, nil, nil, nil, true)
+    GameTooltip:Show()
+  end)
+  accountWideCb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  frame.accountWideCb = accountWideCb
 
   -- ----- Trigger phrases section -----
   -- One phrase per dynamic input row so a phrase can contain a comma (no CSV
@@ -3526,6 +3665,7 @@ function Panel:saveEdit()
 
   -- Snap edit-boxes that may not have lost focus yet
   s.name      = (f.nameInput:GetText() or ""):match("^%s*(.-)%s*$") or ""
+  if f.accountWideCb then s.accountWide = f.accountWideCb:GetChecked() and true or false end
   Panel:syncTriggersFromInputs()
   Panel:syncRepliesFromInputs()
 
@@ -3630,6 +3770,7 @@ local function populateEditWidgets()
   local s = Panel.state
   if not f or not s then return end
   f.nameInput:SetText(s.name or "")
+  if f.accountWideCb then f.accountWideCb:SetChecked(s.accountWide and true or false) end
   Panel:rebuildTriggerInputs()
   Panel:rebuildReplyInputs()
   Panel:rebuildEmoteInputs()
@@ -3752,5 +3893,229 @@ loginFrame:SetScript("OnEvent", function(self)
   self:UnregisterEvent("PLAYER_LOGIN")
   self:SetScript("OnEvent", nil)
 end)
+
+-- ===== Per-watcher Import / Export glue =====
+-- Wraps the MBLib.Dialogs popups + MBLib.Profiles envelope helpers into
+-- the small surface the row-level Export button and the list-level
+-- Import button call into. Meower only owns the bucket-selection step
+-- (Add to Global / Add to Profile) and the bucket-aware insert — the
+-- base64 + envelope round-trip is fully MBLib's.
+
+local WATCHER_ENVELOPE_KIND = "MeowerWatcher"
+
+local function MBLibProfiles() return addon.MBLib and addon.MBLib.Profiles end
+local function MBLibDialogs() return addon.MBLib and addon.MBLib.Dialogs end
+
+-- Public so other modules (and the import-preview popup below) can reuse
+-- the exact same formatting the list row uses.
+Panel.DescribeWatcher = describeWatcher
+
+-- ===== Watcher import preview popup =====
+-- Two-button confirmation that ALSO shows the imported watcher's
+-- description block — same lines, same colors, same indenting as the
+-- live Watchers list. Built once and reused; the body content is torn
+-- down + rebuilt on every Show so each import sees fresh text.
+local function ensureImportPreviewPopup()
+  if Panel._importPreviewPopup then return Panel._importPreviewPopup end
+  local f = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+  f:SetSize(540, 420)
+  f:SetPoint("CENTER")
+  f:SetFrameStrata("DIALOG")
+  f:SetToplevel(true)
+  f:EnableMouse(true)
+  f:SetBackdrop({
+    bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background",
+    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    tile = true, tileSize = 32, edgeSize = 32,
+    insets = { left = 11, right = 12, top = 12, bottom = 11 },
+  })
+  f:SetBackdropColor(0, 0, 0, 1)
+  f:Hide()
+
+  local title = f:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+  title:SetPoint("TOP", 0, -14)
+  title:SetTextColor(1, 0.82, 0)
+  f.title = title
+
+  local body = f:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+  body:SetPoint("TOPLEFT", 16, -42)
+  body:SetPoint("TOPRIGHT", -16, -42)
+  body:SetJustifyH("LEFT")
+  body:SetSpacing(2)
+  f.body = body
+
+  -- Scrollable preview area for the description lines. Sized below the
+  -- body label; bottom edge leaves room for the two action buttons.
+  local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+  scroll:SetPoint("TOPLEFT",     16, -88)
+  scroll:SetPoint("BOTTOMRIGHT", -34, 56)
+  local content = CreateFrame("Frame", nil, scroll)
+  content:SetSize(470, 1)
+  scroll:SetScrollChild(content)
+  f.scroll       = scroll
+  f.scrollContent = content
+  f.previewLines = {}
+
+  local addGlobalBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+  addGlobalBtn:SetSize(140, 24)
+  addGlobalBtn:SetPoint("BOTTOMRIGHT", -16, 14)
+  f.addGlobalBtn = addGlobalBtn
+
+  local addProfileBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+  addProfileBtn:SetSize(140, 24)
+  addProfileBtn:SetPoint("RIGHT", addGlobalBtn, "LEFT", -8, 0)
+  f.addProfileBtn = addProfileBtn
+
+  local cancelBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+  cancelBtn:SetSize(100, 24)
+  cancelBtn:SetPoint("BOTTOMLEFT", 16, 14)
+  cancelBtn:SetText(L.POPUP_CANCEL_BTN)
+  cancelBtn:SetScript("OnClick", function() f:Hide() end)
+  f.cancelBtn = cancelBtn
+
+  Panel._importPreviewPopup = f
+  return f
+end
+
+local function showWatcherImportPreview(watcher, displayName, onAddGlobal, onAddProfile)
+  local f = ensureImportPreviewPopup()
+  f.title:SetText(L.WATCHER_IMPORT_TARGET_TITLE)
+  f.body:SetText(string.format(L.WATCHER_IMPORT_TARGET_BODY_FMT,
+    displayName or L.LIST_ROW_UNTITLED))
+
+  -- Tear down the previous preview's FontStrings and rebuild from
+  -- describeWatcher so each Show reflects the actual incoming payload.
+  for _, fs in ipairs(f.previewLines) do
+    fs:Hide()
+    fs:SetParent(nil)
+  end
+  f.previewLines = {}
+
+  local lines = describeWatcher(watcher)
+  local prev
+  for _, text in ipairs(lines) do
+    local row = f.scrollContent:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    row:SetWidth(460)
+    row:SetJustifyH("LEFT")
+    row:SetSpacing(2)
+    row:SetText(text)
+    if prev then
+      row:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -2)
+    else
+      row:SetPoint("TOPLEFT", f.scrollContent, "TOPLEFT", 4, -4)
+    end
+    table.insert(f.previewLines, row)
+    prev = row
+  end
+
+  -- Deferred resize so anchor-derived bottom is settled.
+  C_Timer.After(0, function()
+    if not f.scrollContent then return end
+    local tail = f.previewLines[#f.previewLines]
+    if not tail then f.scrollContent:SetHeight(40); return end
+    local top, bot = f.scrollContent:GetTop(), tail:GetBottom()
+    if top and bot then f.scrollContent:SetHeight((top - bot) + 12) end
+  end)
+
+  f.addGlobalBtn:SetText(L.WATCHER_IMPORT_ADD_GLOBAL_BTN)
+  f.addProfileBtn:SetText(L.WATCHER_IMPORT_ADD_PROFILE_BTN)
+  f.addGlobalBtn:SetScript("OnClick", function()
+    f:Hide()
+    if onAddGlobal then onAddGlobal() end
+  end)
+  f.addProfileBtn:SetScript("OnClick", function()
+    f:Hide()
+    if onAddProfile then onAddProfile() end
+  end)
+  f:Show()
+end
+
+-- Strip storage-bucket metadata before wrapping for export so the
+-- payload is bucket-agnostic. The id is also dropped — the receiving
+-- character will get a fresh id on insert (preserving the source id
+-- could collide with an unrelated watcher already on the receiver's
+-- side, since the id counter is local to each account).
+local function exportable(watcher)
+  local copy = {}
+  for k, v in pairs(watcher) do copy[k] = v end
+  copy.id = nil
+  copy.accountWide = nil
+  return copy
+end
+
+function Panel:_exportWatcher(watcher)
+  if not watcher then return end
+  local P = MBLibProfiles()
+  local D = MBLibDialogs()
+  if not (P and D) then return end
+  local payload = P:WrapForExport(WATCHER_ENVELOPE_KIND, exportable(watcher), {
+    name = watcher.name or "",
+  })
+  if not payload then return end
+  D:ShowExport({
+    title   = string.format(L.WATCHER_EXPORT_TITLE_FMT, watcher.name or L.LIST_ROW_UNTITLED),
+    prompt  = L.WATCHER_EXPORT_PROMPT,
+    payload = payload,
+  })
+end
+
+-- Drops an imported watcher into either bucket. The accountWide flag is
+-- set to match the chosen bucket so the Upsert routing lands it in the
+-- right place; Upsert itself allocates a fresh local id.
+local function insertImportedWatcher(watcher, accountWide)
+  watcher.id = nil
+  watcher.accountWide = accountWide and true or false
+  addon.Watchers:Upsert(watcher)
+  if refreshList then refreshList() end
+end
+
+function Panel:_showWatcherImport()
+  local P = MBLibProfiles()
+  local D = MBLibDialogs()
+  if not (P and D) then return end
+  D:ShowImport({
+    title  = L.WATCHER_IMPORT_TITLE,
+    prompt = L.WATCHER_IMPORT_PROMPT,
+    accept = function(raw)
+      local envelope, err = P:UnwrapImport(raw)
+      if not envelope then
+        return string.format(L.PROFILES_ERR_INVALID, tostring(err or "?"))
+      end
+      if envelope.kind ~= WATCHER_ENVELOPE_KIND then
+        return L.WATCHER_IMPORT_ERR_NOT_WATCHER
+      end
+      local payload = envelope.payload
+      if type(payload) ~= "table" then
+        return L.WATCHER_IMPORT_ERR_NOT_WATCHER
+      end
+      -- Validated. Step 2: rich preview popup that renders the imported
+      -- watcher's configuration using describeWatcher — same colors and
+      -- layout as the live Watchers list. Two action buttons (Add to
+      -- Global / Add to Profile) plus Cancel; both add-paths normalize
+      -- the watcher (so a fresh local id is allocated by Upsert and
+      -- accountWide is set to match the chosen bucket).
+      local function copyPayload(t)
+        local out = {}
+        for k, v in pairs(t) do
+          out[k] = (type(v) == "table") and copyPayload(v) or v
+        end
+        return out
+      end
+      -- describeWatcher needs a normalized watcher (filters block, etc.)
+      -- to walk its fields cleanly. Re-using the existing addon.Watchers
+      -- normalizer keeps the preview consistent with what the receiving
+      -- bucket will actually store.
+      local previewWatcher = copyPayload(payload)
+      if addon.Watchers and addon.Watchers.NormalizeForPreview then
+        addon.Watchers:NormalizeForPreview(previewWatcher)
+      end
+      local displayName = envelope.name or payload.name or L.LIST_ROW_UNTITLED
+      showWatcherImportPreview(previewWatcher, displayName,
+        function() insertImportedWatcher(copyPayload(payload), true)  end,
+        function() insertImportedWatcher(copyPayload(payload), false) end)
+      return nil
+    end,
+  })
+end
 
 addon.WatchersPanel = Panel

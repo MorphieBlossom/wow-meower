@@ -1,26 +1,34 @@
 local _, addon = ...
 local L = addon.L
 
--- Stats canvas subcategory. Visual language mirrors WatchersPanel's sections
--- (full separator → [+/-] toggle → gold header → muted description → content
--- rows). Each section is collapsible; default state is expanded. Collapse
--- state lives in-memory only (per-session) so the page always opens in a
--- discoverable shape.
+-- Stats canvas subcategory. Two tabs:
+--   Top 10s   — totals + top-N lists (the historical view)
+--   Overview  — per-player drill-down: search + trigger filter, then an
+--               expandable row per player showing every trigger they hit,
+--               every reply they got back, and every emote that fired.
+--               Lazy-loaded in batches so a long roster doesn't stall the
+--               UI on first render.
 --
--- Per refresh we tear down + rebuild the dynamic content rows of each
--- section. The static scaffolding (separator, toggle, header, description,
--- bottomAnchor) is built once at panel construction.
+-- Reset button sticks outside the tab bodies (bottom-left of the panel) so
+-- it stays reachable in either tab and resets the whole Stats store, not
+-- just the active tab.
 
 local Panel = {}
 
-local CONTENT_WIDTH = 660
-local INNER_WIDTH   = 560
-local LEFT_MARGIN   = 16
-local TOP_PAD       = 20
-local HEADER_H      = 22
-local SECTION_PAD   = 14
-local TOP_N         = 10
-local EXPAND_BTN_W  = 22
+local CONTENT_WIDTH    = 660
+local INNER_WIDTH      = 560
+local LEFT_MARGIN      = 16
+local TOP_PAD          = 20
+local HEADER_H         = 22
+local SECTION_PAD      = 14
+local TOP_N            = 10
+local EXPAND_BTN_W     = 22
+-- Lazy-load knobs for the Overview tab. We render this many player blocks
+-- per batch; when the user scrolls within SCROLL_TRIGGER_PX of the bottom,
+-- we render the next batch. Tuned to keep the first paint cheap and
+-- subsequent appends imperceptible.
+local OVERVIEW_BATCH       = 20
+local OVERVIEW_SCROLL_TRIGGER_PX = 80
 
 local COLOR_HEADING = { r = 1.0, g = 0.82, b = 0.0 }
 local COLOR_SOFT    = { r = 0.7, g = 0.7,  b = 0.7 }
@@ -120,25 +128,30 @@ local function ensureResetPopup()
   return f
 end
 
--- ===== Section scaffolding =====
+-- ===== Top 10s tab: section scaffolding =====
 -- Each section is built once with: separator, [+/-] toggle, gold header,
 -- muted description, and a 1×1 bottomAnchor. The next section's separator
 -- anchors to the previous section's bottomAnchor, so collapse → expand
 -- naturally reflows the chain. Dynamic content rows live below the
 -- description and are recreated on every refresh.
-local function buildSection(content, key, headerText, descText, prevAnchor)
+--
+-- `skipSeparator` is set on the first section because the panel-level
+-- top separator (the one the tabs visibly attach to) already plays that
+-- role — drawing another line 10px below it produced a double-line look
+-- and pushed the first section's toggle further from the tab bottom.
+local function buildSection(content, key, headerText, descText, prevAnchor, skipSeparator)
   local sec = { key = key, contentRows = {} }
-  sec.separator = makeFullSeparator(content, prevAnchor, -10)
+  if not skipSeparator then
+    sec.separator = makeFullSeparator(content, prevAnchor, -10)
+  end
 
   sec.toggleBtn = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
   sec.toggleBtn:SetSize(EXPAND_BTN_W, HEADER_H)
-  -- Anchor directly to the separator's BOTTOMLEFT so we have ONE anchor
-  -- (single set of constraints). The separator's LEFT sits at content.LEFT
-  -- + 10, so we offset by (LEFT_MARGIN - 10) to land at content.LEFT +
-  -- LEFT_MARGIN. The previous code used two anchors (TOPLEFT to content
-  -- and TOP to separator) which conflicted and pinned every section to
-  -- content.TOPLEFT.
-  sec.toggleBtn:SetPoint("TOPLEFT", sec.separator, "BOTTOMLEFT", LEFT_MARGIN - 10, -8)
+  if sec.separator then
+    sec.toggleBtn:SetPoint("TOPLEFT", sec.separator, "BOTTOMLEFT", LEFT_MARGIN - 10, -8)
+  else
+    sec.toggleBtn:SetPoint("TOPLEFT", prevAnchor, "BOTTOMLEFT", LEFT_MARGIN, -8)
+  end
   sec.toggleBtn:SetText("-")
   sec.toggleBtn:SetScript("OnClick", function()
     sec.collapsed = not sec.collapsed
@@ -149,9 +162,6 @@ local function buildSection(content, key, headerText, descText, prevAnchor)
   sec.header = makeHeader(content, headerText)
   sec.header:SetPoint("LEFT", sec.toggleBtn, "RIGHT", 6, 0)
 
-  -- Description sits inline behind the header (separated by " - "). Wraps
-  -- against the right edge of the content if the text is unusually long;
-  -- short labels stay on a single line.
   sec.descLabel = makeMutedLabel(content, " - " .. descText)
   sec.descLabel:SetPoint("LEFT",  sec.header, "RIGHT", 6, 0)
   sec.descLabel:SetPoint("RIGHT", content,    "RIGHT", -10, 0)
@@ -163,64 +173,6 @@ local function buildSection(content, key, headerText, descText, prevAnchor)
   return sec
 end
 
--- ===== Panel build =====
-local function buildPanel()
-  local frame = CreateFrame("Frame")
-
-  local title = makeLabel(frame, L.STATS_TITLE, "GameFontNormalLarge")
-  title:SetPoint("TOPLEFT", LEFT_MARGIN + 4, -TOP_PAD)
-
-  local desc = makeLabel(frame, L.STATS_DESC, "GameFontHighlight")
-  desc:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
-  desc:SetWidth(INNER_WIDTH)
-  desc:SetJustifyH("LEFT")
-
-  -- Reset button sits OUTSIDE the scroll view, anchored bottom-left, so
-  -- it stays visible while the user scrolls. The scrollview's bottom
-  -- inset leaves room for it.
-  local resetBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  resetBtn:SetSize(150, 24)
-  resetBtn:SetPoint("BOTTOMLEFT", LEFT_MARGIN + 4, 14)
-  resetBtn:SetText(L.STATS_RESET_BTN)
-  resetBtn:SetScript("OnClick", function() ensureResetPopup():Show() end)
-  Panel._resetBtn = resetBtn
-
-  local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-  scroll:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -14)
-  scroll:SetPoint("BOTTOMRIGHT", -30, 50)
-
-  local content = CreateFrame("Frame", nil, scroll)
-  content:SetSize(CONTENT_WIDTH, 200)
-  scroll:SetScrollChild(content)
-
-  -- Build sections in display order. Each anchors below the previous
-  -- section's bottomAnchor — the first one anchors to a synthetic top
-  -- anchor at content's TOPLEFT.
-  local topAnchor = CreateFrame("Frame", nil, content)
-  topAnchor:SetSize(1, 1)
-  topAnchor:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
-
-  Panel.sections = {}
-  local prev = topAnchor
-  local function add(key, header, desc_text)
-    local sec = buildSection(content, key, header, desc_text, prev)
-    table.insert(Panel.sections, sec)
-    prev = sec.bottomAnchor
-    return sec
-  end
-  add("overview",  L.STATS_OVERVIEW_HEADER,    L.STATS_OVERVIEW_DESC)
-  add("watchers",  L.STATS_TOP_WATCHERS_HEADER, L.STATS_TOP_WATCHERS_DESC)
-  add("senders",   L.STATS_TOP_SENDERS_HEADER,  L.STATS_TOP_SENDERS_DESC)
-  add("replies",   L.STATS_TOP_REPLIES_HEADER,  L.STATS_TOP_REPLIES_DESC)
-  add("emotes",    L.STATS_TOP_EMOTES_HEADER,   L.STATS_TOP_EMOTES_DESC)
-
-  Panel._frame   = frame
-  Panel._content = content
-  Panel._tailAnchor = prev -- track the final section's bottom for content-height sizing
-  return frame
-end
-
--- ===== Refresh =====
 local function releaseSectionRows(sec)
   for _, w in ipairs(sec.contentRows) do
     w:Hide()
@@ -229,8 +181,6 @@ local function releaseSectionRows(sec)
   sec.contentRows = {}
 end
 
--- Content row builders. Anchoring is owned by addRow (refresh) so we
--- don't end up with the widget carrying two conflicting anchors.
 local function makeSectionLine(content, text)
   local l = makeLabel(content, text, "GameFontHighlight")
   l:SetWidth(INNER_WIDTH - 4)
@@ -245,11 +195,48 @@ local function makeSectionMuted(content, text)
   return l
 end
 
-local function refresh()
-  if not Panel._content then return end
+-- ===== Top 10s tab =====
+local function buildTop10sTab(parent)
+  local frame = CreateFrame("Frame", nil, parent)
+  frame:SetAllPoints(parent)
+
+  local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
+  scroll:SetPoint("TOPLEFT", 0, 0)
+  scroll:SetPoint("BOTTOMRIGHT", -26, 0)
+
+  local content = CreateFrame("Frame", nil, scroll)
+  content:SetSize(CONTENT_WIDTH, 200)
+  scroll:SetScrollChild(content)
+
+  -- Build sections in display order.
+  local topAnchor = CreateFrame("Frame", nil, content)
+  topAnchor:SetSize(1, 1)
+  topAnchor:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
+
+  Panel.sections = {}
+  local prev = topAnchor
+  local function add(key, header, desc_text)
+    local skipSep = (#Panel.sections == 0) -- first section reuses panel topSep
+    local sec = buildSection(content, key, header, desc_text, prev, skipSep)
+    table.insert(Panel.sections, sec)
+    prev = sec.bottomAnchor
+    return sec
+  end
+  add("overview",  L.STATS_OVERVIEW_HEADER,     L.STATS_OVERVIEW_DESC)
+  add("watchers",  L.STATS_TOP_WATCHERS_HEADER, L.STATS_TOP_WATCHERS_DESC)
+  add("senders",   L.STATS_TOP_SENDERS_HEADER,  L.STATS_TOP_SENDERS_DESC)
+
+  frame._content    = content
+  frame._tailAnchor = prev
+  return frame
+end
+
+local function refreshTop10s()
+  local frame = Panel._top10sFrame
+  if not frame or not frame._content then return end
   local Stats = addon.Extras and addon.Extras.Stats
   if not Stats then return end
-  local content = Panel._content
+  local content = frame._content
   local data = Stats:Get() or {}
   local notMe = Stats:NotMePredicate()
 
@@ -260,35 +247,32 @@ local function refresh()
       sec.collapsed and L.STATS_SECTION_EXPAND_TOOLTIP_TITLE
                      or L.STATS_SECTION_COLLAPSE_TOOLTIP_TITLE)
 
-    -- A section's separator sits ABOVE its header. When the previous
-    -- section is collapsed, hide this section's separator AND re-anchor
-    -- the toggle directly to the previous bottomAnchor so collapsed
-    -- sections butt up against each other without leaving a vertical
-    -- "ghost" gap where the separator would have been.
     local prevSec = Panel.sections[idx - 1]
     sec.toggleBtn:ClearAllPoints()
     if prevSec and prevSec.collapsed then
-      sec.separator:Hide()
-      -- prevSec.bottomAnchor already sits in the column's left edge
-      -- (anchored to prev.toggleBtn.BOTTOMLEFT). Use a 0 x-offset so
-      -- collapsed sections stack flush instead of indenting further
-      -- each step.
+      if sec.separator then sec.separator:Hide() end
       sec.toggleBtn:SetPoint("TOPLEFT", prevSec.bottomAnchor, "BOTTOMLEFT", 0, -2)
     else
-      sec.separator:Show()
-      sec.toggleBtn:SetPoint("TOPLEFT", sec.separator, "BOTTOMLEFT", LEFT_MARGIN - 10, -8)
+      if sec.separator then
+        sec.separator:Show()
+        sec.toggleBtn:SetPoint("TOPLEFT", sec.separator, "BOTTOMLEFT", LEFT_MARGIN - 10, -8)
+      else
+        -- Section with no separator (the first one) anchors directly
+        -- below the previous section's bottomAnchor (or, for idx 1,
+        -- to its parent's TOPLEFT via the original buildSection call).
+        if prevSec then
+          sec.toggleBtn:SetPoint("TOPLEFT", prevSec.bottomAnchor, "BOTTOMLEFT", 0, -8)
+        else
+          sec.toggleBtn:SetPoint("TOPLEFT", content, "TOPLEFT", LEFT_MARGIN, -8)
+        end
+      end
     end
 
     if not sec.collapsed then
-      -- Build content rows for this section. Each row anchors to the
-      -- previous one (or to toggleBtn for the first row, which puts the
-      -- first content line directly below the inline-description header).
       local prev = sec.toggleBtn
       local function addRow(builder, text)
         local w = builder(content, text)
         if prev == sec.toggleBtn then
-          -- First row: indent slightly from the toggle button's left
-          -- edge so the column reads as nested under the header row.
           w:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 4, -6)
         else
           w:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -2)
@@ -309,7 +293,26 @@ local function refresh()
           addRow(makeSectionMuted, L.STATS_EMPTY)
         else
           for i, p in ipairs(top) do
-            addRow(makeSectionLine, string.format("%d. %s  —  %s", i, Stats:WatcherName(p[1]), colorNum(p[2])))
+            local watcherId = p[1]
+            addRow(makeSectionLine, string.format("%d. %s  —  %s", i, Stats:WatcherName(watcherId), colorNum(p[2])))
+            -- Inline the replies + emotes this watcher actually produced
+            -- (replaces the old standalone "Top replies" / "Top emotes"
+            -- sections — those numbers only make sense in the context of
+            -- which watcher caused them).
+            local repliesMap = (data.repliesByWatcher or {})[watcherId]
+            local sortedReplies = Stats:SortSubmap(repliesMap)
+            for _, r in ipairs(sortedReplies) do
+              addRow(makeSectionMuted, string.format("       \"%s\"  —  %s", tostring(r[1]), colorNum(r[2])))
+            end
+            local emotesMap = (data.emotesByWatcher or {})[watcherId]
+            local sortedEmotes = Stats:SortSubmap(emotesMap)
+            for _, e in ipairs(sortedEmotes) do
+              addRow(makeSectionMuted, string.format("       /%s  —  %s", tostring(e[1]):lower(), colorNum(e[2])))
+            end
+            local actionsCount = (data.actionsByWatcher or {})[watcherId]
+            if actionsCount and actionsCount > 0 then
+              addRow(makeSectionMuted, string.format(L.STATS_TOP_WATCHERS_ACTIONS_FMT, colorNum(actionsCount)))
+            end
           end
         end
       elseif sec.key == "senders" then
@@ -318,63 +321,433 @@ local function refresh()
           addRow(makeSectionMuted, L.STATS_EMPTY)
         else
           for i, p in ipairs(top) do
-            addRow(makeSectionLine, string.format("%d. %s  —  %s", i, tostring(p[1]), colorNum(p[2])))
-          end
-        end
-      elseif sec.key == "replies" then
-        local top = Stats:TopN(data.repliesByText, TOP_N)
-        if #top == 0 then
-          addRow(makeSectionMuted, L.STATS_EMPTY)
-        else
-          for i, p in ipairs(top) do
-            addRow(makeSectionLine, string.format("%d. %s  —  %s", i, tostring(p[1]), colorNum(p[2])))
-          end
-        end
-      elseif sec.key == "emotes" then
-        local top = Stats:TopN(data.firesByEmote, TOP_N)
-        if #top == 0 then
-          addRow(makeSectionMuted, L.STATS_EMPTY)
-        else
-          for i, p in ipairs(top) do
-            addRow(makeSectionLine, string.format("%d. %s  —  %s", i, tostring(p[1]), colorNum(p[2])))
+            addRow(makeSectionLine, string.format("%d. %s  —  %s", i, Stats:DisplaySender(p[1]), colorNum(p[2])))
           end
         end
       end
 
-      -- Bottom anchor sits below the last row when expanded.
       sec.bottomAnchor:ClearAllPoints()
       sec.bottomAnchor:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -SECTION_PAD)
     else
-      -- Collapsed: snap bottomAnchor right under the header row so the
-      -- next section's separator (or, when hidden, its toggle) pulls up
-      -- tight against this one. Minimal pad — no breathing room needed
-      -- when there's no content above to separate from.
       sec.bottomAnchor:ClearAllPoints()
       sec.bottomAnchor:SetPoint("TOPLEFT", sec.toggleBtn, "BOTTOMLEFT", 0, -2)
     end
   end
 
-  -- Resize the scroll content to the final section's bottom + a pad.
-  -- Anchor-derived positions only resolve after a layout pass, so defer.
   C_Timer.After(0, function()
-    if not Panel._content or not Panel._tailAnchor then return end
-    local cTop = Panel._content:GetTop()
-    local aBot = Panel._tailAnchor:GetBottom()
+    if not frame._content or not frame._tailAnchor then return end
+    local cTop = frame._content:GetTop()
+    local aBot = frame._tailAnchor:GetBottom()
     if cTop and aBot then
       local used = (cTop - aBot) + 30
       if used < 200 then used = 200 end
-      Panel._content:SetHeight(used)
+      frame._content:SetHeight(used)
     end
   end)
 end
 
+-- ===== Overview tab =====
+-- Per-player drill-down. State lives on Panel._ov for clarity.
+--
+-- Lazy load: each refresh builds the matching player list, then renders
+-- _renderedCount of those. The ScrollFrame's OnVerticalScroll handler
+-- pushes the next batch when the user scrolls within ~80px of the bottom.
+-- Releasing rows on filter change happens via a single recycle pass — we
+-- detach and clear all existing rows, then re-render from the top.
+
+local function clearOverviewRows()
+  local ov = Panel._ov
+  if not ov then return end
+  for _, b in ipairs(ov.blocks or {}) do
+    b:Hide()
+    b:SetParent(nil)
+    b:ClearAllPoints()
+  end
+  ov.blocks = {}
+end
+
+-- Builds a single expandable player block. Returns the frame + its measured
+-- height so the caller can stack the next block below.
+local function buildPlayerBlock(parent, sender, entry, isExpanded, onToggle)
+  local block = CreateFrame("Frame", nil, parent)
+  block:SetWidth(INNER_WIDTH + 30)
+
+  -- Header row: expand toggle + sender name + total fires
+  local toggleBtn = CreateFrame("Button", nil, block, "UIPanelButtonTemplate")
+  toggleBtn:SetSize(EXPAND_BTN_W, HEADER_H)
+  toggleBtn:SetText(isExpanded and "-" or "+")
+  toggleBtn:SetPoint("TOPLEFT", 0, 0)
+  toggleBtn:SetScript("OnClick", onToggle)
+  setTooltip(toggleBtn,
+    isExpanded and L.STATS_SECTION_COLLAPSE_TOOLTIP_TITLE
+                or L.STATS_SECTION_EXPAND_TOOLTIP_TITLE)
+
+  local label = block:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+  label:SetPoint("LEFT", toggleBtn, "RIGHT", 6, 0)
+  label:SetPoint("RIGHT", block, "RIGHT", -10, 0)
+  label:SetJustifyH("LEFT")
+  local Stats = addon.Extras and addon.Extras.Stats
+  local displaySender = (Stats and Stats.DisplaySender) and Stats:DisplaySender(sender) or sender
+  label:SetText(string.format(L.STATS_OVERVIEW_PLAYER_TOTAL_FMT, displaySender, colorNum(entry.total or 0)))
+
+  if not isExpanded then
+    block:SetHeight(HEADER_H + 4)
+    return block, HEADER_H + 4
+  end
+
+  -- Expanded: stack three sub-sections (triggers, replies, emotes). Each is
+  -- rendered only when it has data — empty maps are skipped entirely so the
+  -- expanded view stays terse. `Stats` is the same local already bound
+  -- above for the header label's DisplaySender call.
+  local y = HEADER_H + 4
+  local function subHeader(text)
+    local h = block:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    h:SetText(text)
+    h:SetTextColor(COLOR_HEADING.r, COLOR_HEADING.g, COLOR_HEADING.b)
+    h:SetPoint("TOPLEFT", EXPAND_BTN_W + 8, -y)
+    y = y + 16
+  end
+  local function subRow(text)
+    local r = block:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    r:SetText(text)
+    r:SetPoint("TOPLEFT", EXPAND_BTN_W + 20, -y)
+    r:SetPoint("RIGHT", block, "RIGHT", -10, 0)
+    r:SetJustifyH("LEFT")
+    y = y + 14
+  end
+
+  local sections = {
+    { key = "triggers", header = L.STATS_OVERVIEW_SECTION_TRIGGERS, map = entry.triggers },
+    { key = "replies",  header = L.STATS_OVERVIEW_SECTION_REPLIES,  map = entry.replies  },
+    { key = "emotes",   header = L.STATS_OVERVIEW_SECTION_EMOTES,   map = entry.emotes   },
+  }
+  local anyData = false
+  for _, s in ipairs(sections) do
+    local sorted = Stats and Stats:SortSubmap(s.map) or {}
+    if #sorted > 0 then
+      anyData = true
+      subHeader(s.header)
+      for _, p in ipairs(sorted) do
+        subRow(string.format("%s  —  %s", tostring(p[1]), colorNum(p[2])))
+      end
+      y = y + 4
+    end
+  end
+  if not anyData then
+    subRow(L.STATS_OVERVIEW_PLAYER_NO_DATA)
+  end
+
+  y = y + 4
+  block:SetHeight(y)
+  return block, y
+end
+
+local function refreshOverview(resetScroll)
+  local frame = Panel._overviewFrame
+  if not frame then return end
+  local Stats = addon.Extras and addon.Extras.Stats
+  if not Stats then return end
+  local ov = Panel._ov
+  if not ov then return end
+
+  clearOverviewRows()
+  ov.matches = Stats:FilteredPlayers({
+    search       = ov.search,
+    trigger      = ov.triggerFilter ~= "" and ov.triggerFilter or nil,
+    excludeSelf  = false,
+  })
+  ov.renderedCount = 0
+
+  if resetScroll and ov.scroll then ov.scroll:SetVerticalScroll(0) end
+
+  -- Empty state messages — different copy when filters are active vs the
+  -- "nothing ever fired" baseline, so the user knows whether to clear
+  -- filters or wait for a trigger.
+  if #ov.matches == 0 then
+    local hasAny = next(Stats:Get() and Stats:Get().byPlayer or {}) ~= nil
+    local text = hasAny and L.STATS_OVERVIEW_NO_MATCHES or L.STATS_OVERVIEW_EMPTY
+    local msg = makeMutedLabel(ov.content, text)
+    msg:SetPoint("TOPLEFT", 16, -12)
+    msg:SetPoint("TOPRIGHT", -16, -12)
+    msg:SetJustifyH("LEFT")
+    table.insert(ov.blocks, msg)
+    ov.content:SetHeight(60)
+    if ov.statusLabel then ov.statusLabel:SetText("") end
+    return
+  end
+
+  Panel._appendOverviewBatch()
+end
+
+-- Renders the next batch of OVERVIEW_BATCH player blocks. Anchors each
+-- block to the previous one's BOTTOMLEFT. Updates content height + the
+-- "Showing N of M" status label.
+local function appendOverviewBatch()
+  local ov = Panel._ov
+  if not ov or not ov.matches then return end
+  local total = #ov.matches
+  if ov.renderedCount >= total then return end
+
+  local prev = ov.blocks[#ov.blocks]
+
+  local i = ov.renderedCount
+  local stopAt = math.min(total, i + OVERVIEW_BATCH)
+  while i < stopAt do
+    i = i + 1
+    local row = ov.matches[i]
+    local sender, entry = row.sender, row.entry
+    local expanded = ov.expanded[sender] == true
+    local function onToggle()
+      ov.expanded[sender] = not expanded
+      refreshOverview(false)
+    end
+    local block = buildPlayerBlock(ov.content, sender, entry, expanded, onToggle)
+    if prev then
+      block:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -4)
+      block:SetPoint("TOPRIGHT", prev, "BOTTOMRIGHT", 0, -4)
+    else
+      block:SetPoint("TOPLEFT", ov.content, "TOPLEFT", 6, -8)
+      block:SetPoint("TOPRIGHT", ov.content, "TOPRIGHT", -6, -8)
+    end
+    table.insert(ov.blocks, block)
+    prev = block
+  end
+  ov.renderedCount = i
+
+  -- Resize the scroll child to fit the rendered chain (plus a little
+  -- breathing room so the last block's bottom isn't flush against the
+  -- scroll edge).
+  C_Timer.After(0, function()
+    if not ov.content then return end
+    local tail = ov.blocks[#ov.blocks]
+    if not tail then return end
+    local cTop = ov.content:GetTop()
+    local bBot = tail:GetBottom()
+    if cTop and bBot then
+      local used = (cTop - bBot) + 20
+      if used < 60 then used = 60 end
+      ov.content:SetHeight(used)
+    end
+  end)
+
+  if ov.statusLabel then
+    ov.statusLabel:SetText(string.format(L.STATS_OVERVIEW_STATUS_FMT, ov.renderedCount, total))
+  end
+end
+Panel._appendOverviewBatch = appendOverviewBatch
+
+local function buildOverviewTab(parent)
+  local frame = CreateFrame("Frame", nil, parent)
+  frame:SetAllPoints(parent)
+
+  -- Search box (Blizzard's SearchBoxTemplate gives us the magnifying-glass
+  -- icon and an X clear button for free).
+  local searchBox = CreateFrame("EditBox", nil, frame, "SearchBoxTemplate")
+  searchBox:SetSize(220, 22)
+  searchBox:SetPoint("TOPLEFT", 8, -4)
+  searchBox:SetAutoFocus(false)
+  searchBox:SetMaxLetters(60)
+  searchBox:SetScript("OnTextChanged", function(self, userInput)
+    if not userInput then return end
+    Panel._ov.search = (self:GetText() or ""):match("^%s*(.-)%s*$")
+    refreshOverview(true)
+  end)
+  searchBox:HookScript("OnEditFocusLost", function(self) self:HighlightText(0, 0) end)
+
+  -- Trigger filter — a Blizzard DropdownButton (same modern menu system
+  -- the watcher edit form uses). Default option "All triggers" clears the
+  -- filter; everything else is sourced from Stats:AllRecordedTriggers().
+  local TRIGGER_ALL = ""
+  local triggerDd = CreateFrame("DropdownButton", nil, frame, "WowStyle1DropdownTemplate")
+  triggerDd:SetWidth(220)
+  triggerDd:SetPoint("LEFT", searchBox, "RIGHT", 12, 0)
+  triggerDd:SetDefaultText(L.STATS_OVERVIEW_TRIGGER_FILTER_ALL)
+  triggerDd:SetupMenu(function(_, rootDescription)
+    if rootDescription.SetScrollMode then
+      rootDescription:SetScrollMode(10 * 20)
+    end
+    local Stats = addon.Extras and addon.Extras.Stats
+    local current = Panel._ov.triggerFilter or TRIGGER_ALL
+    local function isSelectedAll() return current == TRIGGER_ALL end
+    local function setAll()
+      Panel._ov.triggerFilter = TRIGGER_ALL
+      triggerDd:OverrideText(L.STATS_OVERVIEW_TRIGGER_FILTER_ALL)
+      refreshOverview(true)
+    end
+    rootDescription:CreateRadio(L.STATS_OVERVIEW_TRIGGER_FILTER_ALL, isSelectedAll, setAll, TRIGGER_ALL)
+    if Stats then
+      for _, trigger in ipairs(Stats:AllRecordedTriggers()) do
+        local t = trigger
+        rootDescription:CreateRadio(t,
+          function() return current == t end,
+          function()
+            Panel._ov.triggerFilter = t
+            triggerDd:OverrideText(t)
+            refreshOverview(true)
+          end, t)
+      end
+    end
+  end)
+
+  -- Status line: "Showing N of M". Sits to the right of the trigger
+  -- dropdown so the user can read the filter result count without
+  -- having to scroll the list to the bottom.
+  local status = makeMutedLabel(frame, "")
+  status:SetPoint("LEFT", triggerDd, "RIGHT", 12, 0)
+  status:SetPoint("RIGHT", frame, "RIGHT", -30, 0)
+  status:SetJustifyH("LEFT")
+
+  -- Scroll area for the player blocks.
+  local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
+  scroll:SetPoint("TOPLEFT", searchBox, "BOTTOMLEFT", 0, -10)
+  scroll:SetPoint("BOTTOMRIGHT", -26, 0)
+
+  local content = CreateFrame("Frame", nil, scroll)
+  content:SetSize(CONTENT_WIDTH, 100)
+  scroll:SetScrollChild(content)
+
+  -- Lazy-load trigger: when the user scrolls within OVERVIEW_SCROLL_TRIGGER_PX
+  -- of the bottom AND there are more players to render, append the next
+  -- batch. We compare scroll position against (max - threshold) so the
+  -- batch lands before the user hits the floor.
+  scroll:SetScript("OnVerticalScroll", function(self, _offset)
+    local max = self:GetVerticalScrollRange()
+    local cur = self:GetVerticalScroll()
+    if max - cur <= OVERVIEW_SCROLL_TRIGGER_PX then
+      appendOverviewBatch()
+    end
+  end)
+
+  Panel._ov = {
+    search         = "",
+    triggerFilter  = TRIGGER_ALL,
+    matches        = {},
+    blocks         = {},
+    expanded       = {},
+    renderedCount  = 0,
+    scroll         = scroll,
+    content        = content,
+    statusLabel    = status,
+    searchBox      = searchBox,
+    triggerDd      = triggerDd,
+  }
+
+  return frame
+end
+
+-- ===== Tab switching =====
+local function setTab(name)
+  if name ~= "top10s" and name ~= "overview" then name = "top10s" end
+  Panel.tab = name
+  if Panel._top10sFrame and Panel._overviewFrame then
+    Panel._top10sFrame:SetShown(name == "top10s")
+    Panel._overviewFrame:SetShown(name == "overview")
+  end
+  if Panel._top10sTabBtn and Panel._overviewTabBtn then
+    PanelTemplates_DeselectTab(Panel._top10sTabBtn)
+    PanelTemplates_DeselectTab(Panel._overviewTabBtn)
+    if name == "top10s" then
+      PanelTemplates_SelectTab(Panel._top10sTabBtn)
+    else
+      PanelTemplates_SelectTab(Panel._overviewTabBtn)
+    end
+  end
+  if Panel.refresh then Panel.refresh() end
+end
+Panel.setTab = setTab
+
+-- ===== Refresh dispatcher =====
+local function refresh()
+  if Panel.tab == "overview" then
+    refreshOverview(false)
+  else
+    refreshTop10s()
+  end
+end
 Panel.refresh = refresh
+
+-- ===== Panel build =====
+local function buildPanel()
+  local frame = CreateFrame("Frame")
+
+  local title = makeLabel(frame, L.STATS_TITLE, "GameFontNormalLarge")
+  title:SetPoint("TOPLEFT", LEFT_MARGIN + 4, -TOP_PAD)
+
+  local desc = makeLabel(frame, L.STATS_DESC, "GameFontHighlight")
+  desc:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
+  desc:SetWidth(INNER_WIDTH + 80)
+  desc:SetJustifyH("LEFT")
+
+  -- Tab buttons: PanelTopTabButtonTemplate matches the watcher edit form's
+  -- tabs so the visual language stays consistent across the addon.
+  -- PanelTemplates_TabResize sizes each button to its label text — without
+  -- it the buttons keep their default fixed width and the next-tab offset
+  -- ends up landing wherever that default starts. The -3 LEFT/RIGHT spacing
+  -- between tabs is the canonical Blizzard tab-button overlap (the side
+  -- caps blend into each other on purpose).
+  -- Panel-level top separator. The tabs visibly attach to this line —
+  -- selected tab's body extends down across the separator so it merges
+  -- with the content below. The first Top-10s section (when built)
+  -- skips its own internal separator so we don't end up with a
+  -- double-drawn line at the same y.
+  local topSep = frame:CreateTexture(nil, "ARTWORK")
+  topSep:SetHeight(1)
+  topSep:SetPoint("TOPLEFT",  desc,  "BOTTOMLEFT", 0,   -42)
+  topSep:SetPoint("TOPRIGHT", frame, "TOPRIGHT",  -30,  0)
+  topSep:SetColorTexture(1, 1, 1, 0.3)
+
+  local top10sTabBtn = CreateFrame("Button", nil, frame, "PanelTopTabButtonTemplate")
+  top10sTabBtn:SetID(1)
+  top10sTabBtn:SetText(L.STATS_TAB_TOP10S)
+  PanelTemplates_TabResize(top10sTabBtn, 0)
+  top10sTabBtn:SetPoint("BOTTOMLEFT", topSep, "TOPLEFT", 18, 0)
+  top10sTabBtn:SetScript("OnClick", function() setTab("top10s") end)
+
+  local overviewTabBtn = CreateFrame("Button", nil, frame, "PanelTopTabButtonTemplate")
+  overviewTabBtn:SetID(2)
+  overviewTabBtn:SetText(L.STATS_TAB_OVERVIEW)
+  PanelTemplates_TabResize(overviewTabBtn, 0)
+  overviewTabBtn:SetPoint("LEFT", top10sTabBtn, "RIGHT", -3, 0)
+  overviewTabBtn:SetScript("OnClick", function() setTab("overview") end)
+
+  -- Reset button sits OUTSIDE the tab bodies, anchored bottom-left, so it
+  -- stays visible while the user scrolls either tab. Both tab bodies leave
+  -- room above this for it.
+  local resetBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  resetBtn:SetSize(150, 24)
+  resetBtn:SetPoint("BOTTOMLEFT", LEFT_MARGIN + 4, 14)
+  resetBtn:SetText(L.STATS_RESET_BTN)
+  resetBtn:SetScript("OnClick", function() ensureResetPopup():Show() end)
+  Panel._resetBtn = resetBtn
+
+  -- Tab body container starts just below the panel-level top separator
+  -- (the line the tabs visibly attach to). Both tab content frames
+  -- anchor inside this area; swapping tabs is just a visibility flip.
+  local body = CreateFrame("Frame", nil, frame)
+  body:SetPoint("TOPLEFT",     topSep, "BOTTOMLEFT",  0, -6)
+  body:SetPoint("BOTTOMRIGHT", frame,  "BOTTOMRIGHT", -10, 50)
+
+  Panel._top10sTabBtn   = top10sTabBtn
+  Panel._overviewTabBtn = overviewTabBtn
+  Panel._top10sFrame   = buildTop10sTab(body)
+  Panel._overviewFrame = buildOverviewTab(body)
+
+  setTab("top10s")
+  Panel._frame = frame
+  return frame
+end
 
 -- ===== Subcategory registration =====
 local function build()
   if not (Settings and Settings.RegisterCanvasLayoutSubcategory) then return end
   local mainCategory = addon.MBLib and addon.MBLib._optionsCategory
   if not mainCategory then return end
+  -- Honor the Stats master toggle. Skipping registration here keeps the
+  -- Stats subcategory out of the options tree entirely when disabled —
+  -- there's no Blizzard Settings API to unregister a subcategory after
+  -- the fact, which is why the toggle requires /reload to fully apply.
+  local Stats = addon.Extras and addon.Extras.Stats
+  if Stats and Stats.IsEnabled and not Stats:IsEnabled() then return end
 
   local frame = buildPanel()
   frame:SetScript("OnShow", refresh)

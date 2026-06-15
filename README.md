@@ -1,6 +1,6 @@
 # <img src="https://raw.githubusercontent.com/MorphieBlossom/wow-meower/refs/heads/main/media/meower-icon.png" width="50" height="50"> Meower
 
-### Version 12.0.5.2 - available for World of Warcraft ![Version](https://img.shields.io/badge/version-12.0.5-blue)
+### Version 12.0.5.3 - available for World of Warcraft ![Version](https://img.shields.io/badge/version-12.0.5-blue)
 
 👉 View the [changelog here](https://raw.githubusercontent.com/MorphieBlossom/wow-meower/main/CHANGELOG.md)
 
@@ -25,6 +25,7 @@ _If you have questions, suggestions or encountering issues - feel free to reach 
 👉 Randomize replies by adding multiple, so your character doesn't repeat itself.  
 👉 Gate the trigger with optional filters (such as): Current zone, Friends only, Time of day, Day of week, Druid shapeshift form.  
 👉 Get a heads-up when a watcher matches — play a sound, pop an icon on screen, or color-highlight the matched phrase right in chat.  
+👉 Keep separate watcher sets per character with **Profiles** — and share a profile (or a single watcher) with another player via import / export.  
 👉 Become an all time professional cat.
 
 ## __It will not__:
@@ -44,7 +45,8 @@ Open the settings via either:
 
 You can configure:
 
-- **Watchers** — add, edit, activate / deactivate, or delete watchers.
+- **Watchers** — add, edit, activate / deactivate, or delete watchers. Two tabs: Global watchers (shared by every character on your account) and Profile watchers (only fire while the active profile is the one bound to the current character).
+- **Profiles** — keep different watcher sets per character. Switch the active profile via the dropdown at the top of the Profiles page, or copy / export / import a profile to share it.
 - **Movers** — reposition every on-screen display frame from one place.
 - **Stats** — see how often each watcher fires, who triggers them most, and which replies and emotes you send the most.
 - **Additional settings** — change the display or protect you from spamming chat.

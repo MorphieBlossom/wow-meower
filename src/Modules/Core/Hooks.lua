@@ -26,11 +26,12 @@ local Hooks = {}
 
 Hooks.ReplyTransforms = {} -- Transform: (text, ctx) -> text
 Hooks.OnWatcherFired  = {} -- Dispatch:  (watcher, sender, channelKey, trigger)
-Hooks.OnReplyText     = {} -- Dispatch:  (watcher, sender, resolvedText)
-Hooks.OnEmoteFired    = {} -- Dispatch:  (watcher, sender, token)
-Hooks.OnActionFired   = {} -- Dispatch:  (watcher, sender, actionKind)  -- "invite" | "guildInvite" | "kick"
+Hooks.OnReplyText     = {} -- Dispatch:  (watcher, sender, resolvedText, channelKey, trigger)
+Hooks.OnEmoteFired    = {} -- Dispatch:  (watcher, sender, token, channelKey, trigger)
+Hooks.OnActionFired   = {} -- Dispatch:  (watcher, sender, actionKind, channelKey, trigger)  -- "invite" | "guildInvite" | "kick"
 Hooks.OnKickConfirmed = {} -- Dispatch:  (target, sender, channelKey, trigger)
 Hooks.OnAFKChanged    = {} -- Dispatch:  (isAFK)
+Hooks.OnWatcherDeleted = {} -- Dispatch: (watcherId)  -- extras drop state keyed by this id
 
 function Hooks.GetNow()
   return date("*t")

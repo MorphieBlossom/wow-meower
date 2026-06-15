@@ -2,6 +2,22 @@ local _, addon = ...
 
 addon.MBLib.Changelog:Set({
   {
+    version = "12.0.5.3",
+    date = "2026-06-15",
+    notify = true,
+    categories = {
+      ["New"] = {
+        "Profiles: Per-character configurations. Each character can have its own watcher set — switch between them from the new Profiles page. Profiles can be copied, exported as a shareable string, and imported from another player. Each watcher can also be marked Account-wide so it follows you across every character.",
+        "Stats page: See how often each watcher fires and who triggers it. Two tabs — \"Top 10s\" with totals and the top watchers / senders, and \"Overview\" with a per-player drill-down (search by name, filter by trigger, expand any player to see every trigger they hit and every reply / emote you sent back). Can be turned off entirely from the new \"Extras\" settings group.",
+        "Watchers list: Two tabs — Global (account-wide) and Profile. Per-watcher Export button and a list-level Import button for sharing single watchers.",
+      },
+      ["Fixed"] = {
+        "Combat error: Chat messages tagged with Blizzard's new \"secret value\" during combat no longer crash the dispatcher.",
+        "Chat coloring: Your own outgoing messages are no longer color-highlighted when they contain a trigger phrase.",
+      },
+    },
+  },
+  {
     version = "12.0.5.2",
     date = "2026-06-06",
     notify = false,

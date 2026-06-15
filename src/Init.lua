@@ -2,6 +2,18 @@ local addonName, addon = ...
 
 addon.MBLib:AddSlashTrigger("/mw")
 addon.MBLib:SetIcon("Interface\\AddOns\\" .. addonName .. "\\Media\\meower-icon.png")
+-- Opt into the MBLib profile system. Has to be called BEFORE MBLib:Init
+-- so the active profile is bound before Watchers / Stats / Movers ask
+-- for their backing stores. No-op on builds without Profiles.
+if addon.MBLib.Profiles and addon.MBLib.Profiles.Enable then
+  addon.MBLib.Profiles:Enable()
+  -- Drop schema-agnostic empties ("" / {}) from export strings so the
+  -- exported watcher / profile dump is shorter. Lossless: Meower's
+  -- normalizeWatcher fills missing fields with defaults on import.
+  if addon.MBLib.Profiles.SetExportCompact then
+    addon.MBLib.Profiles:SetExportCompact(true)
+  end
+end
 addon.MBLib:SetSettingsSubcategoryName("Settings")
 addon.MBLib:SetMacroButton({
   icon      = "INV_BabyEversongLynx_Black",
@@ -21,6 +33,9 @@ f:SetScript("OnEvent", function(self, _, name)
     -- the Options panel is built inside Init() and isn't rebuilt after.
     if addon.Extras and addon.Extras.Woofer and addon.Extras.Woofer.RegisterSettings then
       addon.Extras.Woofer:RegisterSettings()
+    end
+    if addon.Extras and addon.Extras.Stats and addon.Extras.Stats.RegisterSettings then
+      addon.Extras.Stats:RegisterSettings()
     end
     addon.MBLib:Init()
     if addon.Debug and addon.Debug.Init then

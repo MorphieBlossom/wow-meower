@@ -18,6 +18,61 @@ local function db()
   return d
 end
 
+-- ===== Profile-aware storage =====
+-- Watchers live in two buckets:
+--   * account-wide ("global") — MBLib.Profiles:GetAccount().Watchers, shared
+--     across every character on the account
+--   * profile-scoped — MBLib.Profiles:GetActive().Watchers, lives in the
+--     character's currently-active profile
+--
+-- The per-watcher `accountWide` flag picks which bucket the watcher lives
+-- in. Reads merge both buckets so dispatch / UI see one logical list;
+-- writes route to the correct bucket based on the flag (Upsert) or by
+-- finding the watcher's current bucket (Delete, SetEnabled, mutation).
+--
+-- Legacy SavedVariables had a single flat `_db.Watchers` list. Migration
+-- (one-shot, in Init) moves everything in that list into the active
+-- profile's Watchers — that matches "what the user had configured was
+-- this-character data" — and clears the legacy slot.
+local function accountWatchers()
+  local P = addon.MBLib and addon.MBLib.Profiles
+  if not (P and P.IsEnabled and P:IsEnabled()) then
+    -- Profiles disabled (e.g. legacy SV or transient state during init):
+    -- fall back to flat _db.Watchers so the rest of the module keeps
+    -- working until Profiles is wired.
+    local d = db()
+    return d.Watchers
+  end
+  local account = P:GetAccount()
+  if not account then return {} end
+  if type(account.Watchers) ~= "table" then account.Watchers = {} end
+  return account.Watchers
+end
+
+local function profileWatchers()
+  local P = addon.MBLib and addon.MBLib.Profiles
+  if not (P and P.IsEnabled and P:IsEnabled()) then return {} end
+  local profile = P:GetActive()
+  if not profile then return {} end
+  if type(profile.Watchers) ~= "table" then profile.Watchers = {} end
+  return profile.Watchers
+end
+
+-- Returns the live backing array containing watcher.id, plus the index
+-- within it. Used by mutation paths (Delete, SetEnabled, in-place edit
+-- via Upsert when id matches). Returns nil when the id isn't found in
+-- either bucket.
+local function findWatcherBucket(id)
+  if not id then return nil end
+  for i, w in ipairs(accountWatchers()) do
+    if w.id == id then return accountWatchers(), i, "account" end
+  end
+  for i, w in ipairs(profileWatchers()) do
+    if w.id == id then return profileWatchers(), i, "profile" end
+  end
+  return nil
+end
+
 local function debugLog(msg)
   if MBLib.Utils and MBLib.Utils.DebugLog then
     MBLib.Utils:DebugLog(msg)
@@ -48,6 +103,11 @@ end
 local function normalizeWatcher(w)
   if type(w) ~= "table" then return end
   w.reply = w.reply or {}
+  -- accountWide picks which storage bucket the watcher lives in (account
+  -- vs active profile). Legacy watchers predate this field — default to
+  -- false so existing rows stay where they currently are (the profile
+  -- bucket they were migrated into).
+  if w.accountWide == nil then w.accountWide = false end
 
   -- Per-trigger case-sensitive flags parallel to w.triggers. Older watchers
   -- predate this field — default everything to nil (case-insensitive).
@@ -332,6 +392,21 @@ local function channelLabelColored(channelKey)
     def.label)
 end
 
+-- ===== Combat-tainted "secret values" =====
+-- Blizzard added an `issecretvalue` API that flags fields the secure-capsule
+-- subsystem has marked as opaque during combat / protected contexts. Touching
+-- one — even with `==`, `:find`, or arithmetic — raises a "attempt to compare
+-- a secret value" error and taints the current execution. The dispatcher reads
+-- message/sender/guid every event, so any of them coming through as a secret
+-- in combat would crash the whole handler.
+--
+-- We can't peer at the value before checking; we can only ask "is this a
+-- secret value?" first and bail if so. Wrapped in a type check so the addon
+-- still loads on clients that predate the API (it'll simply never flag).
+local function isSecretValue(v)
+  return type(issecretvalue) == "function" and issecretvalue(v) or false
+end
+
 -- ===== Event subscription tracking =====
 -- Only register chat events that at least one *enabled* watcher actually needs.
 -- This avoids dispatching onChatEvent for channels nobody listens to. The set
@@ -344,14 +419,20 @@ local registeredEvents = {}
 
 local function neededChatEvents()
   local channelKeys = {}
-  local list = db().Watchers
-  for _, w in ipairs(list) do
-    if w.enabled and w.channels then
-      for k, v in pairs(w.channels) do
-        if v then channelKeys[k] = true end
+  -- Walk both buckets directly so we see every enabled watcher even
+  -- before the merged GetAll() view is asked for. Order doesn't matter
+  -- here — we're only collecting the union of channel keys.
+  local function collect(list)
+    for _, w in ipairs(list or {}) do
+      if w.enabled and w.channels then
+        for k, v in pairs(w.channels) do
+          if v then channelKeys[k] = true end
+        end
       end
     end
   end
+  collect(accountWatchers())
+  collect(profileWatchers())
   local events = {}
   for channelKey in pairs(channelKeys) do
     local def = Constants.CHANNEL_BY_KEY[channelKey]
@@ -383,53 +464,116 @@ end
 
 -- ===== CRUD =====
 
+-- Returns a fresh array combining account + profile watchers — in that
+-- order so account-wide watchers fire first when several would all match
+-- the same message. Callers SHOULD NOT mutate the returned list: the
+-- backing storage is split between two buckets and the merged view is
+-- recomputed on every call. Mutation paths use the bucket helpers above.
 function Watchers:GetAll()
-  return db().Watchers
+  local out = {}
+  for _, w in ipairs(accountWatchers()) do out[#out + 1] = w end
+  for _, w in ipairs(profileWatchers()) do out[#out + 1] = w end
+  return out
 end
+
+-- Account-only and profile-only views, for the tabbed Watchers panel.
+function Watchers:GetAccount() return accountWatchers() end
+function Watchers:GetProfile() return profileWatchers() end
 
 function Watchers:GetByID(id)
   if not id then return nil end
-  for _, w in ipairs(self:GetAll()) do
+  for _, w in ipairs(accountWatchers()) do
+    if w.id == id then return w end
+  end
+  for _, w in ipairs(profileWatchers()) do
     if w.id == id then return w end
   end
   return nil
 end
 
-local function collectIdSet(list)
-  local set = {}
-  for _, w in ipairs(list) do set[w.id] = true end
-  return set
+-- Monotonic id allocator. Persists the highest-ever-issued numeric suffix
+-- in SavedVariables so deletions can never cause a reused id — even after
+-- /reload or relog. Seeds from the existing watcher list the first time
+-- it's called (handles upgrades from builds that used Helpers.newId,
+-- which derived the next id from the current set max and DID reuse ids
+-- after the highest one was deleted). Stats and other extras key off
+-- watcher.id, and a reused id would silently fold the new watcher's
+-- counters into the deleted one's row.
+-- Monotonic id allocator. The counter lives at the SV root (NOT inside a
+-- profile) so ids stay unique across every bucket — account watchers and
+-- watchers in every profile pull from the same sequence. Without that,
+-- exporting a watcher from profile A and importing it into profile B
+-- could land on an id that's already in use by an unrelated watcher.
+local function nextWatcherId()
+  local d = db()
+  if d.NextWatcherIdSeq == nil then
+    local seed = 0
+    local function seedFromList(list)
+      for _, w in ipairs(list or {}) do
+        local n = type(w.id) == "string" and tonumber(w.id:match("^w(%d+)$"))
+        if n and n > seed then seed = n end
+      end
+    end
+    seedFromList(d.Watchers)
+    seedFromList(accountWatchers())
+    -- Walk every profile's watchers so the seed beats the highest id in
+    -- existence anywhere, not just in the active profile.
+    if addon.MBLib and addon.MBLib.Profiles and addon.MBLib.Profiles.All then
+      for _, profile in pairs(addon.MBLib.Profiles:All()) do
+        seedFromList(profile.Watchers)
+      end
+    end
+    d.NextWatcherIdSeq = seed
+  end
+  d.NextWatcherIdSeq = d.NextWatcherIdSeq + 1
+  return ("w%d"):format(d.NextWatcherIdSeq)
+end
+
+-- Pick the backing list that matches the watcher's accountWide flag. Used
+-- both when inserting a brand-new watcher and when an Upsert flips an
+-- existing watcher's accountWide value (we delete from the old bucket
+-- and re-insert into the new one — that path lives in Upsert below).
+local function bucketFor(watcher)
+  if watcher and watcher.accountWide then return accountWatchers(), "account" end
+  return profileWatchers(), "profile"
 end
 
 function Watchers:Upsert(watcher)
   if type(watcher) ~= "table" then return nil end
   normalizeWatcher(watcher)
-  local list = self:GetAll()
   if watcher.id then
-    for i, w in ipairs(list) do
-      if w.id == watcher.id then
-        list[i] = watcher
+    local list, idx, bucketName = findWatcherBucket(watcher.id)
+    if list and idx then
+      -- accountWide flip: if the saved value moves between buckets, lift
+      -- it out of the old list and fall through to the insert path.
+      local targetBucketName = watcher.accountWide and "account" or "profile"
+      if bucketName == targetBucketName then
+        list[idx] = watcher
         refreshEventSubscriptions()
         return watcher
       end
+      table.remove(list, idx)
     end
   end
-  watcher.id = Helpers.newId(collectIdSet(list))
-  table.insert(list, watcher)
+  if not watcher.id then
+    watcher.id = nextWatcherId()
+  end
+  local targetList = bucketFor(watcher)
+  table.insert(targetList, watcher)
   refreshEventSubscriptions()
   return watcher
 end
 
 function Watchers:Delete(id)
-  local list = self:GetAll()
-  for i, w in ipairs(list) do
-    if w.id == id then
-      table.remove(list, i)
-      refreshEventSubscriptions()
-      return true
-    end
-  end
-  return false
+  local list, idx = findWatcherBucket(id)
+  if not list then return false end
+  table.remove(list, idx)
+  refreshEventSubscriptions()
+  -- Let extras (Stats, ...) drop any state they keep keyed by the
+  -- deleted id. The id is never reused (nextWatcherId is monotonic),
+  -- so any leftover entry would be permanently orphaned in the UI.
+  Hooks:Dispatch("OnWatcherDeleted", id)
+  return true
 end
 
 function Watchers:SetEnabled(id, enabled)
@@ -573,11 +717,13 @@ local function sendReply(watcher, channelKey, sender, bnSenderID, trigger)
   end
   -- Stats subscribes here so the picked + transformed text shows up in the
   -- top-replies list (random pick happens above, so OnWatcherFired alone
-  -- can't see the actually-sent text).
-  Hooks:Dispatch("OnReplyText", watcher, sender, resolved)
+  -- can't see the actually-sent text). Pass channelKey + trigger so the
+  -- per-player drill-down view can join the reply to its originating
+  -- trigger (otherwise the trigger fan-out is invisible to that hook).
+  Hooks:Dispatch("OnReplyText", watcher, sender, resolved, channelKey, trigger)
 end
 
-local function doEmoteReply(watcher, sender)
+local function doEmoteReply(watcher, sender, channelKey, trigger)
   local r = watcher.reply
   local emotes = r and r.emotes
   if type(emotes) ~= "table" or #emotes == 0 then return end
@@ -599,8 +745,10 @@ local function doEmoteReply(watcher, sender)
   pcall(DoEmote, token, charName)
   -- Per-emote counter (Stats). Fired even when the underlying DoEmote
   -- pcall fails — the user's INTENT was to emote, which is what stats
-  -- track. Listeners get the watcher + sender + emote token.
-  Hooks:Dispatch("OnEmoteFired", watcher, sender, token)
+  -- track. Listeners get the watcher + sender + emote token + channel +
+  -- trigger so the per-player drill-down can join the emote back to
+  -- the trigger that caused it.
+  Hooks:Dispatch("OnEmoteFired", watcher, sender, token, channelKey, trigger)
 end
 
 -- ===== Secure-template invite + kick popups =====
@@ -966,24 +1114,24 @@ local function dispatch(watcher, channelKey, sender, bnSenderID, trigger)
   local hasEmote = type(r.emotes) == "table" and #r.emotes > 0
 
   if r.emoteFirst and hasText and hasEmote then
-    doEmoteReply(watcher, sender)
+    doEmoteReply(watcher, sender, channelKey, trigger)
     sendReply(watcher, channelKey, sender, bnSenderID, trigger)
   else
     if hasText  then sendReply(watcher, channelKey, sender, bnSenderID, trigger) end
-    if hasEmote then doEmoteReply(watcher, sender) end
+    if hasEmote then doEmoteReply(watcher, sender, channelKey, trigger) end
   end
 
   if r.invite then
     tryInvite(watcher, channelKey, sender, bnSenderID, trigger)
-    Hooks:Dispatch("OnActionFired", watcher, sender, "invite")
+    Hooks:Dispatch("OnActionFired", watcher, sender, "invite", channelKey, trigger)
   end
   if r.guildInvite then
     tryGuildInvite(channelKey, sender, bnSenderID, trigger)
-    Hooks:Dispatch("OnActionFired", watcher, sender, "guildInvite")
+    Hooks:Dispatch("OnActionFired", watcher, sender, "guildInvite", channelKey, trigger)
   end
   if r.kick then
     tryKick(channelKey, sender, bnSenderID, trigger)
-    Hooks:Dispatch("OnActionFired", watcher, sender, "kick")
+    Hooks:Dispatch("OnActionFired", watcher, sender, "kick", channelKey, trigger)
   end
 end
 
@@ -1102,7 +1250,7 @@ local function applyTriggerColoring(message, channelKey)
   -- includes this event. First-watcher-wins per phrase: subsequent rules for
   -- the same lowercased phrase are ignored.
   local entries, seen = {}, {}
-  for _, watcher in ipairs(db().Watchers) do
+  for _, watcher in ipairs(Watchers:GetAll()) do
     if watcher.enabled
        and watcher.channels and watcher.channels[channelKey]
        and watcher.notifications and watcher.notifications.triggerColors
@@ -1192,6 +1340,9 @@ end
 -- msg, sender, ..., guid, bnSenderID, ...). We only rewrite the message; the
 -- rest of the args pass through untouched. Return false to keep the line.
 local function chatColoringFilter(_, event, msg, ...)
+  -- Same secret-value guard as onChatEvent — `msg == ""` and the per-watcher
+  -- :find calls inside applyTriggerColoring would raise on a secret string.
+  if isSecretValue(msg) then return end
   if not msg or msg == "" or not EVENT_TO_KEY then return end
   -- CHAT_MSG_CHANNEL serves every world channel. The filter callback's
   -- vararg starts at arg2 (the event's first vararg is `msg` which we
@@ -1216,6 +1367,21 @@ local function chatColoringFilter(_, event, msg, ...)
     channelKey = EVENT_TO_KEY[event]
   end
   if not channelKey then return end
+
+  -- Mirror onChatEvent's sender gating: only color messages that the
+  -- dispatcher would actually fire on. Without this, the filter colored
+  -- the player's own outgoing messages (and NPC chatter on SAY/EMOTE)
+  -- whenever the text contained a trigger phrase — even though no watcher
+  -- ever fired on them. In the filter, msg is pulled out as the first
+  -- vararg, so the event's arg12 (guid) lands at select(11, ...).
+  local channelDef = Constants.CHANNEL_BY_KEY[channelKey]
+  if not (channelDef and channelDef.isBnet) then
+    local guid = select(11, ...)
+    if isSecretValue(guid) then return end
+    if not guid or not guid:find("^Player%-") then return end
+    if guid == UnitGUID("player") then return end
+  end
+
   local newMsg = applyTriggerColoring(msg, channelKey)
   if newMsg == msg then return end
   return false, newMsg, ...
@@ -1349,6 +1515,13 @@ local function onChatEvent(EVENT_TO_KEY, event, ...)
   local guid       = select(12, ...)
   local bnSenderID = select(13, ...)
 
+  -- Bail before any comparison if any of the fields we read came through
+  -- as a Blizzard "secret value" — touching one with `==` / `:find` raises
+  -- and taints execution. This happens during combat for some event flows.
+  if isSecretValue(message) or isSecretValue(sender) or isSecretValue(guid) then
+    return
+  end
+
   if not message or message == "" then return end
 
   -- Player vs NPC filter. BNet whispers have no GUID — they're identified by
@@ -1371,11 +1544,35 @@ function Watchers:Init()
   if self._initialized then return end
   self._initialized = true
 
+  -- One-time migration: pre-Profiles builds wrote every watcher to a flat
+  -- _db.Watchers list. Move that list into the active profile (where the
+  -- character's previous data conceptually belonged) and drop the legacy
+  -- slot. Walk every existing watcher AFTER migration so normalizeWatcher
+  -- sees the modern shape and the bucket helpers iterate the right
+  -- storage.
+  local d = db()
+  if type(d.Watchers) == "table" and #d.Watchers > 0 then
+    local target = profileWatchers()
+    for _, w in ipairs(d.Watchers) do
+      table.insert(target, w)
+    end
+    d.Watchers = nil
+  end
+
   -- One-time schema lift over everything in SavedVariables. After this pass
   -- the rest of the code (UI, dispatch) can assume the modern shape without
   -- defensive `or {}` reads on every field.
-  for _, w in ipairs(self:GetAll()) do
-    normalizeWatcher(w)
+  for _, w in ipairs(accountWatchers()) do normalizeWatcher(w) end
+  for _, w in ipairs(profileWatchers()) do normalizeWatcher(w) end
+
+  -- When the active profile changes (the user activates a different one
+  -- from the Profiles panel), re-evaluate which chat events we need to
+  -- subscribe to — different profile = different watcher set.
+  if addon.MBLib and addon.MBLib.Profiles and addon.MBLib.Profiles.OnActivated then
+    addon.MBLib.Profiles:OnActivated(function()
+      for _, w in ipairs(profileWatchers()) do normalizeWatcher(w) end
+      refreshEventSubscriptions()
+    end)
   end
 
   -- Build secure popups now; SecureActionButton needs to be created out of
@@ -1404,6 +1601,13 @@ function Watchers:Init()
   local combatFrame = CreateFrame("Frame")
   combatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
   combatFrame:SetScript("OnEvent", drainPendingActions)
+end
+
+-- Public hook for the import-preview popup so it can normalize a
+-- decoded payload before describeWatcher walks it (filters block fill,
+-- accountWide default, etc.) without actually inserting the watcher.
+function Watchers:NormalizeForPreview(w)
+  normalizeWatcher(w)
 end
 
 addon.Watchers = Watchers

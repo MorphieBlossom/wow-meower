@@ -271,6 +271,12 @@ function Constants.NEW_WATCHER_DEFAULTS()
   return {
     name = "",
     enabled = true,
+    -- accountWide picks the storage bucket for this watcher. false (the
+    -- default) means it lives in the active profile's Watchers list and
+    -- only fires while the local character has that profile selected.
+    -- true means it lives in the account-wide bucket and fires on every
+    -- character. Toggleable from the Trigger config checkbox.
+    accountWide = false,
     triggers = {},
     -- Parallel to `triggers`: boolean per phrase. true means the phrase only
     -- matches when message casing matches exactly. nil/false = case-insensitive

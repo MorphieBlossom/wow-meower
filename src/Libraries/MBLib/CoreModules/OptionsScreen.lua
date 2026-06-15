@@ -18,6 +18,32 @@ local function IsAddonLoaded(name)
   return false
 end
 
+-- The "Other Addons" panel is built during the consumer's ADDON_LOADED,
+-- which fires before every other addon has reached its own ADDON_LOADED.
+-- Peer addons that load alphabetically after the consumer therefore read
+-- as "not loaded" at panel-build time even when they're enabled and about
+-- to load. We collect the per-row refresh closures and re-run them at
+-- PLAYER_LOGIN (the first event guaranteed to follow every addon's load).
+local pendingAddonRowRefresh = {}
+local addonRowRefreshFrame
+
+local function ScheduleAddonRowRefresh(fn)
+  -- If we're already past login (e.g. consumer opened options after /reload
+  -- in a way that rebuilt the panel), the initial inline check is already
+  -- authoritative — no deferred refresh needed.
+  if IsLoggedIn and IsLoggedIn() then return end
+  table.insert(pendingAddonRowRefresh, fn)
+  if addonRowRefreshFrame then return end
+  addonRowRefreshFrame = CreateFrame("Frame")
+  addonRowRefreshFrame:RegisterEvent("PLAYER_LOGIN")
+  addonRowRefreshFrame:SetScript("OnEvent", function(self)
+    for _, cb in ipairs(pendingAddonRowRefresh) do pcall(cb) end
+    pendingAddonRowRefresh = {}
+    self:UnregisterAllEvents()
+    self:SetScript("OnEvent", nil)
+  end)
+end
+
 local function GetDefaultValueLabel(def)
   if not def then return "" end
   if def.Type == "dropdown" and def.Options and #def.Options > 0 then
@@ -85,8 +111,6 @@ local function CreateSeparatorBelow(parent, anchor, offsetX, offsetY)
 end
 
 local function CreateAddonRow(parent, lastAnchor, isFirst, info)
-  local loaded = IsAddonLoaded(info.name)
-
   local row = CreateFrame("Frame", nil, parent)
   row:SetHeight(24)
   if isFirst then
@@ -105,15 +129,6 @@ local function CreateAddonRow(parent, lastAnchor, isFirst, info)
   statusBtn:SetPoint("LEFT", 0, 0)
   local statusFS = statusBtn:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
   statusFS:SetAllPoints()
-  statusFS:SetText(loaded and MBLib.ICON_CHECKMARK or MBLib.ICON_CROSS)
-  local tooltipText = loaded
-    and MBLib.L.OPTIONS_OTHER_ADDONS_INSTALLED
-    or MBLib.L.OPTIONS_OTHER_ADDONS_MISSING
-  statusBtn:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    GameTooltip:SetText(tooltipText, 1, 1, 1)
-    GameTooltip:Show()
-  end)
   statusBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
   -- Addon name — always a Blizzard-style Button. Loaded addons jump to
@@ -125,22 +140,41 @@ local function CreateAddonRow(parent, lastAnchor, isFirst, info)
   nameBtn:SetText(info.name)
   nameBtn:SetHeight(22)
   nameBtn:SetWidth(nameBtn:GetTextWidth() + 20)
-  if loaded then
-    nameBtn:SetScript("OnClick", function()
-      local handler = SlashCmdList[info.name:upper()]
-      if handler then handler("settings") end
+
+  -- Apply (or re-apply) all visuals + click behavior that depend on the
+  -- target addon's loaded state. Called once now, and again at PLAYER_LOGIN
+  -- so peer addons loaded after this consumer no longer read as missing.
+  local function ApplyLoadedState()
+    local loaded = IsAddonLoaded(info.name)
+    statusFS:SetText(loaded and MBLib.ICON_CHECKMARK or MBLib.ICON_CROSS)
+    local tooltipText = loaded
+      and MBLib.L.OPTIONS_OTHER_ADDONS_INSTALLED
+      or MBLib.L.OPTIONS_OTHER_ADDONS_MISSING
+    statusBtn:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+      GameTooltip:SetText(tooltipText, 1, 1, 1)
+      GameTooltip:Show()
     end)
-  else
-    nameBtn:SetScript("OnClick", function()
-      if MBLib.CopyPopup and MBLib.CopyPopup.Show then
-        MBLib.CopyPopup:Show({
-          title       = MBLib.L.OPTIONS_OTHER_ADDONS_GET_FMT:format(info.name),
-          description = MBLib.L.OPTIONS_OTHER_ADDONS_GET_DESC,
-          text        = MBLib.AUTHOR_URL,
-        })
-      end
-    end)
+    if loaded then
+      nameBtn:SetScript("OnClick", function()
+        local handler = SlashCmdList[info.name:upper()]
+        if handler then handler("settings") end
+      end)
+    else
+      nameBtn:SetScript("OnClick", function()
+        if MBLib.CopyPopup and MBLib.CopyPopup.Show then
+          MBLib.CopyPopup:Show({
+            title       = MBLib.L.OPTIONS_OTHER_ADDONS_GET_FMT:format(info.name),
+            description = MBLib.L.OPTIONS_OTHER_ADDONS_GET_DESC,
+            text        = MBLib.AUTHOR_URL,
+          })
+        end
+      end)
+    end
   end
+  ApplyLoadedState()
+  ScheduleAddonRowRefresh(ApplyLoadedState)
+
   local nameAnchor = nameBtn
 
   -- Description fills the rest of the row.
@@ -437,19 +471,22 @@ function OptionsScreen:Build()
   MBLib._optionsCategory = mainCategory
   MBLib._optionsScreenID = mainCategory:GetID()
 
-  -- Movers + Release Notes both register on the PLAYER_LOGIN path so
-  -- they land BELOW any consumer-registered sub-pages (Debug,
+  -- Movers, Profiles, and Release Notes all register on the PLAYER_LOGIN
+  -- path so they land BELOW any consumer-registered sub-pages (Debug,
   -- Watchers, etc.) which themselves typically defer to PLAYER_LOGIN.
-  -- Movers runs synchronously in this handler, then Release Notes
-  -- runs one frame later via C_Timer.After — meaning the final list
-  -- order is:
-  --     Settings -> <consumer subcategories> -> Movers -> Release Notes.
-  -- The Settings API has no reorder primitive, so registration order
-  -- is the only lever we have. Skipping MoversPanel registration when
-  -- the opt-module isn't loaded keeps non-Movers consumers clean.
+  -- Movers + Profiles run synchronously in this handler in that order;
+  -- Release Notes runs one frame later via C_Timer.After so it always
+  -- lands at the very bottom. Final list order is:
+  --     Settings -> <consumer subcategories> -> Movers -> Profiles -> Release Notes.
+  -- The Settings API has no reorder primitive, so registration order is
+  -- the only lever we have. Each panel's Build skips cleanly when its
+  -- opt-module isn't loaded / isn't enabled.
   local function registerLateSubcategories()
     if MBLib.MoversPanel and MBLib.MoversPanel.Build then
       pcall(function() MBLib.MoversPanel:Build(mainCategory) end)
+    end
+    if MBLib.ProfilesPanel and MBLib.ProfilesPanel.Build then
+      pcall(function() MBLib.ProfilesPanel:Build(mainCategory) end)
     end
     C_Timer.After(0, function() CreateReleaseNotesCategory(mainCategory) end)
   end
