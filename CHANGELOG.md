@@ -1,6 +1,16 @@
 ﻿# Changelog
 All notable changes to this project will be documented in this file.
 ---
+### `12.0.5.4` (2026-06-25)
+**Fixed**
+- Fixed an issue on the Stats page that could cause some Lua errors.
+
+---
+### `12.0.7.1` (2026-06-25)
+**Fixed**
+- Fixed an issue on the Stats page that could cause some Lua errors.
+
+---
 ### `12.0.5.3` (2026-06-15)
 **New**
 - Profiles: Per-character configurations. Each character can have its own watcher set — switch between them from the new Profiles page. Profiles can be copied, exported as a shareable string, and imported from another player. Each watcher can also be marked Account-wide so it follows you across every character.

@@ -2,6 +2,16 @@ local _, addon = ...
 
 addon.MBLib.Changelog:Set({
   {
+    version = "12.0.7.1",
+    date = "2026-06-25",
+    notify = false,
+    categories = {
+      ["Fixed"] = {
+        "Fixed an issue on the Stats page that could cause some Lua errors.",
+      },
+    },
+  },
+  {
     version = "12.0.5.3",
     date = "2026-06-15",
     notify = true,

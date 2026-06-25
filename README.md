@@ -1,6 +1,6 @@
 # <img src="https://raw.githubusercontent.com/MorphieBlossom/wow-meower/refs/heads/main/media/meower-icon.png" width="50" height="50"> Meower
 
-### Version 12.0.5.3 - available for World of Warcraft ![Version](https://img.shields.io/badge/version-12.0.5-blue)
+### Version 12.0.7.1 - available for World of Warcraft ![Version](https://img.shields.io/badge/version-12.0.7-blue)
 
 👉 View the [changelog here](https://raw.githubusercontent.com/MorphieBlossom/wow-meower/main/CHANGELOG.md)
 

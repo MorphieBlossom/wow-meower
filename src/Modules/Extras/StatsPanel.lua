@@ -540,6 +540,20 @@ local function buildOverviewTab(parent)
   local frame = CreateFrame("Frame", nil, parent)
   frame:SetAllPoints(parent)
 
+  -- Initialize the overview state table up front. SetupMenu (below) invokes
+  -- its populate callback synchronously during registration, and that
+  -- callback reads Panel._ov — so the table must exist before the dropdown
+  -- is created. Frame references (scroll/content/statusLabel/...) are filled
+  -- in as those frames come into being further down.
+  Panel._ov = {
+    search         = "",
+    triggerFilter  = "",
+    matches        = {},
+    blocks         = {},
+    expanded       = {},
+    renderedCount  = 0,
+  }
+
   -- Search box (Blizzard's SearchBoxTemplate gives us the magnifying-glass
   -- icon and an X clear button for free).
   local searchBox = CreateFrame("EditBox", nil, frame, "SearchBoxTemplate")
@@ -618,19 +632,11 @@ local function buildOverviewTab(parent)
     end
   end)
 
-  Panel._ov = {
-    search         = "",
-    triggerFilter  = TRIGGER_ALL,
-    matches        = {},
-    blocks         = {},
-    expanded       = {},
-    renderedCount  = 0,
-    scroll         = scroll,
-    content        = content,
-    statusLabel    = status,
-    searchBox      = searchBox,
-    triggerDd      = triggerDd,
-  }
+  Panel._ov.scroll      = scroll
+  Panel._ov.content     = content
+  Panel._ov.statusLabel = status
+  Panel._ov.searchBox   = searchBox
+  Panel._ov.triggerDd   = triggerDd
 
   return frame
 end
