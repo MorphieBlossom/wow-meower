@@ -1,11 +1,6 @@
 ﻿# Changelog
 All notable changes to this project will be documented in this file.
 ---
-### `12.0.5.4` (2026-06-25)
-**Fixed**
-- Fixed an issue on the Stats page that could cause some Lua errors.
-
----
 ### `12.0.7.1` (2026-06-25)
 **Fixed**
 - Fixed an issue on the Stats page that could cause some Lua errors.
