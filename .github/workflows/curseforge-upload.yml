@@ -1,0 +1,110 @@
+name: Upload release to CurseForge
+
+# When a GitHub release is published, take the zip already attached to that
+# release and push it to CurseForge's upload API. Nothing is rebuilt here —
+# build.ps1 produced the zip locally and it rode along on the release, so CI
+# is purely "grab the asset, resolve the game version, upload".
+on:
+  release:
+    types: [published]
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      # Pull the *.zip asset off the published release into ./dist.
+      - name: Download release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$REPO" --pattern '*.zip' --dir ./dist
+          ZIP="$(ls ./dist/*.zip | head -n1)"
+          if [ -z "$ZIP" ]; then
+            echo "::error::No .zip asset found on release $TAG"; exit 1
+          fi
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+          echo "Found asset: $ZIP"
+
+      # We check out the source only to read the TOC — the CurseForge project
+      # id and the target interface live there, so the workflow needs no repo
+      # variables beyond the API token secret.
+      - name: Checkout source (for TOC metadata)
+        uses: actions/checkout@v4
+
+      # CurseForge's upload API wants numeric gameVersion IDs, not the WoW
+      # interface number or the "12.0.7" string. Tag the file for every patch
+      # listed on the TOC's `## Interface:` line: decode each interface number
+      # to a patch string (120007 -> 12.0.7, 120100 -> 12.1.0) and match it by
+      # name against /api/game/versions. A listed patch that isn't live on
+      # CurseForge yet is warned-and-skipped rather than fatal, so a
+      # forward-looking interface entry never blocks a release.
+      - name: Resolve CurseForge metadata
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          PROJECT_ID="$(grep -m1 -oP '##\s*X-Curse-Project-ID:\s*\K[0-9]+' src/Meower.toc)"
+          if [ -z "$PROJECT_ID" ]; then
+            echo "::error::Could not read X-Curse-Project-ID from src/Meower.toc"; exit 1
+          fi
+          echo "CF_PROJECT_ID=$PROJECT_ID" >> "$GITHUB_ENV"
+
+          INTERFACES="$(grep -m1 -oP '##\s*Interface:\s*\K.*' src/Meower.toc)"
+          if [ -z "$INTERFACES" ]; then
+            echo "::error::Could not read Interface line from src/Meower.toc"; exit 1
+          fi
+          echo "TOC interface list: $INTERFACES"
+
+          VERSIONS="$(curl -fsSL -H "X-Api-Token: $CF_API_KEY" \
+            https://wow.curseforge.com/api/game/versions)"
+
+          IDS="[]"
+          IFS=',' read -ra NUMS <<< "$INTERFACES"
+          for raw in "${NUMS[@]}"; do
+            n="$(echo "$raw" | tr -dc '0-9')"
+            [ -z "$n" ] && continue
+            # Interface number MMmmpp -> major.minor.patch
+            ver="$(( n / 10000 )).$(( (n / 100) % 100 )).$(( n % 100 ))"
+            id="$(echo "$VERSIONS" | jq -r --arg p "$ver" \
+              'map(select(.name == $p)) | .[0].id // empty')"
+            if [ -n "$id" ]; then
+              IDS="$(echo "$IDS" | jq --argjson x "$id" '. + [$x]')"
+              echo "Matched $ver (interface $n) -> $id"
+            else
+              echo "::warning::No CurseForge game version named '$ver' (interface $n); skipping. Is that patch live on CurseForge yet?"
+            fi
+          done
+
+          IDS="$(echo "$IDS" | jq -c 'unique')"
+          if [ "$IDS" = "[]" ]; then
+            echo "::error::None of the TOC interface versions matched a CurseForge game version"; exit 1
+          fi
+          echo "CF_GAME_VERSION_IDS=$IDS" >> "$GITHUB_ENV"
+          echo "Tagging game version ids: $IDS"
+
+      - name: Upload to CurseForge
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          set -euo pipefail
+
+          # Build the metadata JSON in a file so multi-line changelog markdown
+          # survives intact (curl -F "field=<file" reads the field VALUE from
+          # the file). Empty release body degrades to an empty changelog.
+          jq -n \
+            --arg cl "${RELEASE_BODY:-}" \
+            --argjson gv "$CF_GAME_VERSION_IDS" \
+            '{changelog: $cl, changelogType: "markdown", releaseType: "release", gameVersions: $gv}' \
+            > metadata.json
+
+          echo "Uploading $ZIP to CurseForge project $CF_PROJECT_ID"
+          curl -fsSL -X POST \
+            -H "X-Api-Token: $CF_API_KEY" \
+            -F "metadata=<metadata.json" \
+            -F "file=@$ZIP" \
+            "https://wow.curseforge.com/api/projects/$CF_PROJECT_ID/upload-file"
