@@ -2,6 +2,16 @@ local _, addon = ...
 
 addon.MBLib.Changelog:Set({
   {
+    version = "12.0.7.3",
+    date = "2026-07-02",
+    notify = false,
+    categories = {
+      ["Fixed"] = {
+        "Stats page: high trigger and sender counts are no longer cut off — the count column now fits larger numbers while staying aligned.",
+      },
+    },
+  },
+  {
     version = "12.0.7.2",
     date = "2026-06-25",
     notify = false,

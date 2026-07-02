@@ -52,8 +52,12 @@ end
 local TOPROW_H        = 14
 local TOPROW_RANK_W   = 24   -- left-justified; "1." and "10." share a left edge
 local TOPROW_COUNT_X  = 26
-local TOPROW_COUNT_W  = 24   -- right-justified so counts' right edges line up;
-                             -- kept narrow so counts sit close to the rank
+-- Right-justified so counts' right edges line up. Word-wrap is off on the
+-- count FontString, so this width is a hard clip — too narrow and a high
+-- count renders as "2..." instead of "27 x". Sized wide enough to hold large
+-- counts plus the " x" suffix; the name column derives from it, so widening
+-- this shifts every name in lockstep and alignment is preserved.
+local TOPROW_COUNT_W  = 60
 local TOPROW_NAME_X   = TOPROW_COUNT_X + TOPROW_COUNT_W + 6
 
 local function makeTopListRow(content, rank, count, name)

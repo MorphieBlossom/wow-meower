@@ -1,6 +1,11 @@
 ﻿# Changelog
 All notable changes to this project will be documented in this file.
 ---
+### `12.0.7.3` (2026-07-02)
+**Fixed**
+- Stats page: high trigger and sender counts are no longer cut off — the count column now fits larger numbers while staying aligned.
+
+---
 ### `12.0.7.2` (2026-06-25)
 **New**
 - Watcher filter: Only fire while you are AFK, in Do Not Disturb, or PvP enabled.
