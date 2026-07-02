@@ -12,6 +12,13 @@ jobs:
   upload:
     runs-on: ubuntu-latest
     steps:
+      # Check out the source first — it's needed to read the TOC (project id +
+      # target interfaces), and it must run BEFORE the asset download: this
+      # step cleans the workspace, which would otherwise wipe the untracked
+      # zip we download into ./dist.
+      - name: Checkout source (for TOC metadata)
+        uses: actions/checkout@v4
+
       # Pull the *.zip asset off the published release into ./dist.
       - name: Download release asset
         env:
@@ -27,12 +34,6 @@ jobs:
           fi
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
           echo "Found asset: $ZIP"
-
-      # We check out the source only to read the TOC — the CurseForge project
-      # id and the target interface live there, so the workflow needs no repo
-      # variables beyond the API token secret.
-      - name: Checkout source (for TOC metadata)
-        uses: actions/checkout@v4
 
       # CurseForge's upload API wants numeric gameVersion IDs, not the WoW
       # interface number or the "12.0.7" string. Tag the file for every patch
