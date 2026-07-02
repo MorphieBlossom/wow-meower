@@ -2,6 +2,22 @@ local _, addon = ...
 
 addon.MBLib.Changelog:Set({
   {
+    version = "12.0.7.2",
+    date = "2026-06-25",
+    notify = false,
+    categories = {
+      ["New"] = {
+        "Watcher filter: Only fire while you are AFK, in Do Not Disturb, or PvP enabled.",
+      },
+      ["Changed"] = {
+        "Reworked the layout of the lists on the Stats page.",
+      },
+      ["Fixed"] = {
+        "Invites to players on another realm now work — the invite keeps their realm name.",
+      },
+    },
+  },
+  {
     version = "12.0.7.1",
     date = "2026-06-25",
     notify = false,

@@ -1,6 +1,17 @@
 ﻿# Changelog
 All notable changes to this project will be documented in this file.
 ---
+### `12.0.7.2` (2026-06-25)
+**New**
+- Watcher filter: Only fire while you are AFK, in Do Not Disturb, or PvP enabled.
+
+**Changed**
+- Reworked the layout of the lists on the Stats page.
+
+**Fixed**
+- Invites to players on another realm now work — the invite keeps their realm name.
+
+---
 ### `12.0.7.1` (2026-06-25)
 **Fixed**
 - Fixed an issue on the Stats page that could cause some Lua errors.

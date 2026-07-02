@@ -538,6 +538,17 @@ local function describeWatcher(w)
         #picked > 0 and table.concat(picked, ", ") or L.LIST_ROW_PLACEHOLDER_NONE))
     end
 
+    if w.filters.playerState and w.filters.playerState.enabled then
+      local picked = {}
+      for _, st in ipairs(Constants.PLAYER_STATES) do
+        if w.filters.playerState.states and w.filters.playerState.states[st.key] then
+          table.insert(picked, st.label)
+        end
+      end
+      table.insert(lines, SUB_INDENT .. labelled(L.LIST_ROW_FIELD_STATE,
+        #picked > 0 and table.concat(picked, ", ") or L.LIST_ROW_PLACEHOLDER_NONE))
+    end
+
     if w.filters.cooldown and w.filters.cooldown.enabled then
       table.insert(lines, SUB_INDENT .. labelled(L.LIST_ROW_FIELD_COOLDOWN,
         tostring(w.filters.cooldown.seconds or 0) .. "s"))
@@ -2119,6 +2130,38 @@ local function buildEditForm(parent)
   table.insert(frame.filterBlocks, druidBlock)
   lastFilterBottom = druidBlock.bottomAnchor
 
+  -- ----- Player state filter (AFK / DND / PvP) -----
+  -- A checkbox per state stacked in a single column. The watcher fires only
+  -- while the player is in (at least) one of the ticked states.
+  local stateBlock = buildFilterBlock(lastFilterBottom, L.EDIT_FILTER_STATE_LABEL, "playerState")
+  do
+    local editor = stateBlock.editor
+    local hint = makeMutedLabel(editor, L.EDIT_FILTER_STATE_DESC)
+    hint:SetPoint("TOPLEFT", 0, 0)
+    hint:SetWidth(INNER_WIDTH - 40)
+    hint:SetJustifyH("LEFT")
+
+    stateBlock.stateChecks = {}
+    local prev = hint
+    for i, st in ipairs(Constants.PLAYER_STATES) do
+      local cb = makeCheckbox(editor, st.label)
+      if i == 1 then
+        cb:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -6)
+      else
+        cb:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -2)
+      end
+      cb:SetScript("OnClick", function(self)
+        if Panel.state and Panel.state.filters.playerState then
+          Panel.state.filters.playerState.states[st.key] = self:GetChecked() and true or false
+        end
+      end)
+      stateBlock.stateChecks[st.key] = cb
+      prev = cb
+    end
+  end
+  table.insert(frame.filterBlocks, stateBlock)
+  lastFilterBottom = stateBlock.bottomAnchor
+
   -- ----- Per-watcher cooldown override -----
   local cdBlock = buildFilterBlock(lastFilterBottom, L.EDIT_FILTER_CD_LABEL, "cooldown")
   do
@@ -2758,6 +2801,8 @@ refreshEditForm = function()
     timeOfDay = 64,
     dayOfWeek = math.ceil(#Constants.DAY_OF_WEEK_ORDER / 2) * 28 + 12,
     druidForm = math.ceil(#Constants.DRUID_FORMS / 2) * 28 + 12,
+    -- hint line + one checkbox row per state + trailing pad.
+    playerState = 22 + #Constants.PLAYER_STATES * 24 + 12,
     cooldown  = 56,
   }
 
@@ -2846,6 +2891,12 @@ refreshEditForm = function()
         for _, form in ipairs(Constants.DRUID_FORMS) do
           local cb = block.formChecks[form.key]
           if cb then cb:SetChecked(fState.forms and fState.forms[form.key] and true or false) end
+        end
+
+      elseif block.key == "playerState" then
+        for _, st in ipairs(Constants.PLAYER_STATES) do
+          local cb = block.stateChecks[st.key]
+          if cb then cb:SetChecked(fState.states and fState.states[st.key] and true or false) end
         end
       end
     end

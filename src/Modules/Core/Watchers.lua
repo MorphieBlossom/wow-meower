@@ -823,9 +823,18 @@ local function buildGuildInvitePopup()
   return p
 end
 
-local function charNameOf(sender)
+-- Normalize a chat sender ("Name" or "Name-Realm") into the target string for
+-- /invite or /uninvite. Same-realm senders often arrive realm-suffixed anyway,
+-- so we strip the realm only when it matches the player's own realm and keep
+-- the "-Realm" suffix otherwise — without it, a cross-realm /invite resolves to
+-- nobody (or the wrong same-realm character sharing that name).
+local function inviteTargetOf(sender)
   if not sender or sender == "" then return nil end
-  return sender:match("^([^-]+)") or sender
+  local name, realm = sender:match("^([^-]+)-(.+)$")
+  if not name then return sender end  -- bare name, already same-realm
+  local myRealm = GetNormalizedRealmName and GetNormalizedRealmName() or nil
+  if myRealm and realm == myRealm then return name end
+  return name .. "-" .. realm
 end
 
 -- Resolve a BNet sender's presence id to a "Name-Realm" string suitable for
@@ -857,9 +866,9 @@ end
 local function targetCharFor(channelKey, sender, bnSenderID)
   local def = Constants.CHANNEL_BY_KEY[channelKey]
   if def and def.isBnet then
-    return resolveBnetCharacter(bnSenderID)
+    return inviteTargetOf(resolveBnetCharacter(bnSenderID))
   end
-  return charNameOf(sender)
+  return inviteTargetOf(sender)
 end
 
 local function combatNotice(sender, msg)

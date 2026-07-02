@@ -190,6 +190,14 @@ for _, form in ipairs(Constants.DRUID_FORMS) do
   end
 end
 
+-- Player status states the watcher can gate on. `key` is the stored token
+-- (also drives the WoW API read in Filters.lua); `label` is the UI text.
+Constants.PLAYER_STATES = {
+  { key = "AFK", label = "AFK" },
+  { key = "DND", label = "Do Not Disturb (DND)" },
+  { key = "PVP", label = "PvP enabled" },
+}
+
 local function newFilterDefaults()
   return {
     zone = {
@@ -214,6 +222,10 @@ local function newFilterDefaults()
     druidForm = {
       enabled = false,
       forms = {},
+    },
+    playerState = {
+      enabled = false,
+      states = {}, -- map of PLAYER_STATES key -> true; fire only when in any selected state
     },
     cooldown = {
       enabled = false,

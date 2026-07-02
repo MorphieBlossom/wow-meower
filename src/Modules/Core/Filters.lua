@@ -143,6 +143,27 @@ local function allowDruidForm(f)
   return f.forms and f.forms[key] == true
 end
 
+-- ----- Player state (AFK / DND / PvP) -----
+-- Fires only while the local player is in one of the selected states. The
+-- flags come from MBLib.Utils:GetUnitStatusFlags (shared, secret-value
+-- guarded) so this addon and HoverName read them the same way. With several
+-- states ticked the block passes when ANY of them is active (logical OR).
+-- Enabled with nothing ticked denies — same "empty selection => no match"
+-- rule as the zone gate. If the util is somehow unavailable we fail open
+-- (allow), matching the rest of the addon's filter philosophy.
+local function allowPlayerState(f)
+  if not f or not f.enabled then return true end
+  local states = f.states
+  if type(states) ~= "table" or not next(states) then return false end
+  local U = addon.MBLib and addon.MBLib.Utils
+  if not (U and U.GetUnitStatusFlags) then return true end
+  local afk, dnd, pvp = U:GetUnitStatusFlags("player")
+  if states.AFK and afk then return true end
+  if states.DND and dnd then return true end
+  if states.PVP and pvp then return true end
+  return false
+end
+
 -- ----- Combined check -----
 -- ANDs all enabled filters together. ctx carries the per-message context
 -- (sender, bnSenderID); the other filters source player-state directly.
@@ -157,6 +178,7 @@ function Filters:Allow(watcher, ctx)
   if not allowTimeOfDay(f.timeOfDay) then return false end
   if not allowDayOfWeek(f.dayOfWeek) then return false end
   if not allowDruidForm(f.druidForm) then return false end
+  if not allowPlayerState(f.playerState) then return false end
 
   return true
 end

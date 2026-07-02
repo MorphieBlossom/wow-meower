@@ -39,6 +39,49 @@ local function colorNum(n)
   return "|cffff8000" .. tostring(n) .. "|r"
 end
 
+-- Muted gray wrap (matches COLOR_SOFT) for secondary text like the channel
+-- suffix on a trigger row.
+local function colorSoft(text)
+  return "|cffb3b3b3" .. tostring(text) .. "|r"
+end
+
+-- Top-list rows read "1.   5 x  -  Name". A single proportional-font
+-- FontString can't line the columns up vertically (rank/count widths vary),
+-- so each row is a frame of fixed-width, justified columns: the rank dots,
+-- the orange counts, and the names each start at the same x down the list.
+local TOPROW_H        = 14
+local TOPROW_RANK_W   = 24   -- left-justified; "1." and "10." share a left edge
+local TOPROW_COUNT_X  = 26
+local TOPROW_COUNT_W  = 24   -- right-justified so counts' right edges line up;
+                             -- kept narrow so counts sit close to the rank
+local TOPROW_NAME_X   = TOPROW_COUNT_X + TOPROW_COUNT_W + 6
+
+local function makeTopListRow(content, rank, count, name)
+  local row = CreateFrame("Frame", nil, content)
+  row:SetSize(INNER_WIDTH - 4, TOPROW_H)
+
+  local rankFS = row:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+  rankFS:SetPoint("TOPLEFT", 0, 0)
+  rankFS:SetWidth(TOPROW_RANK_W)
+  rankFS:SetJustifyH("LEFT")
+  rankFS:SetText(rank .. ".")
+
+  local countFS = row:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+  countFS:SetPoint("TOPLEFT", TOPROW_COUNT_X, 0)
+  countFS:SetWidth(TOPROW_COUNT_W)
+  countFS:SetJustifyH("RIGHT")
+  countFS:SetWordWrap(false)
+  countFS:SetText(colorNum(count) .. " x")
+
+  local nameFS = row:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+  nameFS:SetPoint("TOPLEFT", TOPROW_NAME_X, 0)
+  nameFS:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+  nameFS:SetJustifyH("LEFT")
+  nameFS:SetText("-  " .. tostring(name))
+
+  return row
+end
+
 -- ===== Primitives =====
 local function makeLabel(parent, text, fontObject)
   local fs = parent:CreateFontString(nil, "ARTWORK", fontObject or "GameFontNormal")
@@ -162,10 +205,14 @@ local function buildSection(content, key, headerText, descText, prevAnchor, skip
   sec.header = makeHeader(content, headerText)
   sec.header:SetPoint("LEFT", sec.toggleBtn, "RIGHT", 6, 0)
 
+  -- Description trails the header on the same line. Word-wrap stays on so an
+  -- over-long string drops onto a second line rather than clipping at the
+  -- panel edge, but with the now-terse copy it stays on one line.
   sec.descLabel = makeMutedLabel(content, " - " .. descText)
   sec.descLabel:SetPoint("LEFT",  sec.header, "RIGHT", 6, 0)
   sec.descLabel:SetPoint("RIGHT", content,    "RIGHT", -10, 0)
   sec.descLabel:SetJustifyH("LEFT")
+  sec.descLabel:SetWordWrap(true)
 
   sec.bottomAnchor = CreateFrame("Frame", nil, content)
   sec.bottomAnchor:SetSize(1, 1)
@@ -269,9 +316,11 @@ local function refreshTop10s()
     end
 
     if not sec.collapsed then
+      sec.descLabel:Show()
+      -- Content rows stack below the toggle/header line (the description
+      -- trails the header on that same line).
       local prev = sec.toggleBtn
-      local function addRow(builder, text)
-        local w = builder(content, text)
+      local function addWidget(w)
         if prev == sec.toggleBtn then
           w:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 4, -6)
         else
@@ -279,6 +328,9 @@ local function refreshTop10s()
         end
         table.insert(sec.contentRows, w)
         prev = w
+      end
+      local function addRow(builder, text)
+        addWidget(builder(content, text))
       end
 
       if sec.key == "overview" then
@@ -294,25 +346,7 @@ local function refreshTop10s()
         else
           for i, p in ipairs(top) do
             local watcherId = p[1]
-            addRow(makeSectionLine, string.format("%d. %s  —  %s", i, Stats:WatcherName(watcherId), colorNum(p[2])))
-            -- Inline the replies + emotes this watcher actually produced
-            -- (replaces the old standalone "Top replies" / "Top emotes"
-            -- sections — those numbers only make sense in the context of
-            -- which watcher caused them).
-            local repliesMap = (data.repliesByWatcher or {})[watcherId]
-            local sortedReplies = Stats:SortSubmap(repliesMap)
-            for _, r in ipairs(sortedReplies) do
-              addRow(makeSectionMuted, string.format("       \"%s\"  —  %s", tostring(r[1]), colorNum(r[2])))
-            end
-            local emotesMap = (data.emotesByWatcher or {})[watcherId]
-            local sortedEmotes = Stats:SortSubmap(emotesMap)
-            for _, e in ipairs(sortedEmotes) do
-              addRow(makeSectionMuted, string.format("       /%s  —  %s", tostring(e[1]):lower(), colorNum(e[2])))
-            end
-            local actionsCount = (data.actionsByWatcher or {})[watcherId]
-            if actionsCount and actionsCount > 0 then
-              addRow(makeSectionMuted, string.format(L.STATS_TOP_WATCHERS_ACTIONS_FMT, colorNum(actionsCount)))
-            end
+            addWidget(makeTopListRow(content, i, p[2], Stats:WatcherName(watcherId)))
           end
         end
       elseif sec.key == "senders" then
@@ -321,7 +355,7 @@ local function refreshTop10s()
           addRow(makeSectionMuted, L.STATS_EMPTY)
         else
           for i, p in ipairs(top) do
-            addRow(makeSectionLine, string.format("%d. %s  —  %s", i, Stats:DisplaySender(p[1]), colorNum(p[2])))
+            addWidget(makeTopListRow(content, i, p[2], Stats:DisplaySender(p[1])))
           end
         end
       end
@@ -329,6 +363,9 @@ local function refreshTop10s()
       sec.bottomAnchor:ClearAllPoints()
       sec.bottomAnchor:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -SECTION_PAD)
     else
+      -- Collapsed: only the toggle/header line shows. The description trails
+      -- the header on that line, so it stays visible.
+      sec.descLabel:Show()
       sec.bottomAnchor:ClearAllPoints()
       sec.bottomAnchor:SetPoint("TOPLEFT", sec.toggleBtn, "BOTTOMLEFT", 0, -2)
     end
@@ -366,13 +403,20 @@ local function clearOverviewRows()
   ov.blocks = {}
 end
 
--- Builds a single expandable player block. Returns the frame + its measured
--- height so the caller can stack the next block below.
+-- Per-character block. A toggle + name/total header; expanding it reveals a
+-- table-aligned log of the triggers that player hit (count + phrase). Only
+-- triggers are logged — replies and emotes belong to the trigger that
+-- produced them, so they'd just be noise here. The batch loader keeps long
+-- rosters cheap to render. Returns the frame + its measured height so the
+-- caller can stack the next block below.
+local OVLOG_INDENT    = EXPAND_BTN_W + 8
+local OVLOG_VALUE_GAP = 6
+local OVLOG_ROW_H     = 14
+
 local function buildPlayerBlock(parent, sender, entry, isExpanded, onToggle)
   local block = CreateFrame("Frame", nil, parent)
   block:SetWidth(INNER_WIDTH + 30)
 
-  -- Header row: expand toggle + sender name + total fires
   local toggleBtn = CreateFrame("Button", nil, block, "UIPanelButtonTemplate")
   toggleBtn:SetSize(EXPAND_BTN_W, HEADER_H)
   toggleBtn:SetText(isExpanded and "-" or "+")
@@ -382,12 +426,13 @@ local function buildPlayerBlock(parent, sender, entry, isExpanded, onToggle)
     isExpanded and L.STATS_SECTION_COLLAPSE_TOOLTIP_TITLE
                 or L.STATS_SECTION_EXPAND_TOOLTIP_TITLE)
 
+  local Stats = addon.Extras and addon.Extras.Stats
+  local displaySender = (Stats and Stats.DisplaySender) and Stats:DisplaySender(sender) or sender
+
   local label = block:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
   label:SetPoint("LEFT", toggleBtn, "RIGHT", 6, 0)
   label:SetPoint("RIGHT", block, "RIGHT", -10, 0)
   label:SetJustifyH("LEFT")
-  local Stats = addon.Extras and addon.Extras.Stats
-  local displaySender = (Stats and Stats.DisplaySender) and Stats:DisplaySender(sender) or sender
   label:SetText(string.format(L.STATS_OVERVIEW_PLAYER_TOTAL_FMT, displaySender, colorNum(entry.total or 0)))
 
   if not isExpanded then
@@ -395,49 +440,54 @@ local function buildPlayerBlock(parent, sender, entry, isExpanded, onToggle)
     return block, HEADER_H + 4
   end
 
-  -- Expanded: stack three sub-sections (triggers, replies, emotes). Each is
-  -- rendered only when it has data — empty maps are skipped entirely so the
-  -- expanded view stays terse. `Stats` is the same local already bound
-  -- above for the header label's DisplaySender call.
+  -- Expanded: one table-aligned row per trigger (count column + phrase),
+  -- matching the Top-10 lists' column geometry. When a trigger fired in
+  -- more than one channel it gets one row per channel so the per-channel
+  -- counts stay accurate; the channel name trails the phrase in gray.
   local y = HEADER_H + 4
-  local function subHeader(text)
-    local h = block:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    h:SetText(text)
-    h:SetTextColor(COLOR_HEADING.r, COLOR_HEADING.g, COLOR_HEADING.b)
-    h:SetPoint("TOPLEFT", EXPAND_BTN_W + 8, -y)
-    y = y + 16
+  local function logRow(count, phrase, channelLabel)
+    local countFS = block:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    countFS:SetPoint("TOPLEFT", OVLOG_INDENT, -y)
+    countFS:SetWidth(TOPROW_COUNT_W)
+    countFS:SetJustifyH("RIGHT")
+    countFS:SetWordWrap(false)
+    countFS:SetText(colorNum(count) .. " x")
+
+    local valFS = block:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    valFS:SetPoint("TOPLEFT", OVLOG_INDENT + TOPROW_COUNT_W + OVLOG_VALUE_GAP, -y)
+    valFS:SetPoint("RIGHT", block, "RIGHT", -10, 0)
+    valFS:SetJustifyH("LEFT")
+    local text = "-  " .. tostring(phrase)
+    if channelLabel then text = text .. "   " .. colorSoft("(" .. channelLabel .. ")") end
+    valFS:SetText(text)
+    y = y + OVLOG_ROW_H
   end
-  local function subRow(text)
+
+  local triggers = Stats and Stats:SortSubmap(entry.triggers) or {}
+  if #triggers == 0 then
     local r = block:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    r:SetText(text)
-    r:SetPoint("TOPLEFT", EXPAND_BTN_W + 20, -y)
+    r:SetPoint("TOPLEFT", OVLOG_INDENT, -y)
     r:SetPoint("RIGHT", block, "RIGHT", -10, 0)
     r:SetJustifyH("LEFT")
-    y = y + 14
-  end
-
-  local sections = {
-    { key = "triggers", header = L.STATS_OVERVIEW_SECTION_TRIGGERS, map = entry.triggers },
-    { key = "replies",  header = L.STATS_OVERVIEW_SECTION_REPLIES,  map = entry.replies  },
-    { key = "emotes",   header = L.STATS_OVERVIEW_SECTION_EMOTES,   map = entry.emotes   },
-  }
-  local anyData = false
-  for _, s in ipairs(sections) do
-    local sorted = Stats and Stats:SortSubmap(s.map) or {}
-    if #sorted > 0 then
-      anyData = true
-      subHeader(s.header)
-      for _, p in ipairs(sorted) do
-        subRow(string.format("%s  —  %s", tostring(p[1]), colorNum(p[2])))
+    r:SetTextColor(COLOR_SOFT.r, COLOR_SOFT.g, COLOR_SOFT.b)
+    r:SetText(L.STATS_OVERVIEW_PLAYER_NO_DATA)
+    y = y + OVLOG_ROW_H
+  else
+    for _, p in ipairs(triggers) do
+      local phrase = p[1]
+      local chans = Stats and Stats:SortSubmap(entry.triggerChannels and entry.triggerChannels[phrase]) or {}
+      if #chans == 0 then
+        -- Pre-tracking (or channel-less) fire: show the trigger total alone.
+        logRow(p[2], phrase, nil)
+      else
+        for _, c in ipairs(chans) do
+          logRow(c[2], phrase, Stats:ChannelLabel(c[1]))
+        end
       end
-      y = y + 4
     end
   end
-  if not anyData then
-    subRow(L.STATS_OVERVIEW_PLAYER_NO_DATA)
-  end
 
-  y = y + 4
+  y = y + 6
   block:SetHeight(y)
   return block, y
 end

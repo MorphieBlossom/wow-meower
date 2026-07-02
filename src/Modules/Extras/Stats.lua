@@ -144,8 +144,13 @@ local function playerEntry(d, sender)
   if not map then return nil end
   local entry = map[sender]
   if not entry then
-    entry = { total = 0, triggers = {}, replies = {}, emotes = {} }
+    entry = { total = 0, triggers = {}, replies = {}, emotes = {}, triggerChannels = {} }
     map[sender] = entry
+  elseif type(entry.triggerChannels) ~= "table" then
+    -- Back-fill for entries written before per-trigger channel tracking
+    -- existed. Old triggers stay channel-less (there's no way to recover
+    -- which channel a historical fire came from); new fires populate it.
+    entry.triggerChannels = {}
   end
   return entry
 end
@@ -164,7 +169,16 @@ local function onWatcherFired(watcher, sender, channelKey, trigger)
     local entry = playerEntry(d, normSender)
     if entry then
       entry.total = (entry.total or 0) + 1
-      if trigger and trigger ~= "" then inc(entry.triggers, trigger) end
+      if trigger and trigger ~= "" then
+        inc(entry.triggers, trigger)
+        -- Track which channel each trigger fired in, keyed by channel key
+        -- (resolved to a display label only at render time).
+        if channelKey and channelKey ~= "" then
+          local chmap = entry.triggerChannels[trigger]
+          if not chmap then chmap = {}; entry.triggerChannels[trigger] = chmap end
+          inc(chmap, channelKey)
+        end
+      end
     end
   end
 end
@@ -353,6 +367,16 @@ function Stats:SortSubmap(map)
     return a[2] > b[2]
   end)
   return list
+end
+
+-- Resolves a stored channel key (e.g. "g", "cg") to its display label
+-- ("Guild", "General"). Falls back to the raw key for anything unknown.
+function Stats:ChannelLabel(channelKey)
+  if addon.Constants and addon.Constants.CHANNEL_BY_KEY then
+    local def = addon.Constants.CHANNEL_BY_KEY[channelKey]
+    if def and def.label then return def.label end
+  end
+  return tostring(channelKey)
 end
 
 -- Resolves a watcher id to its display name (or the raw id if the watcher

@@ -62,6 +62,22 @@ function Utils:GetNpcID(unit)
   end
 end
 
+-- Returns the AFK / DND / PvP status flags for `unit` (defaults to "player")
+-- as three booleans, in that order. Each underlying API call is guarded
+-- against a missing API and against secret values (combat-tainted fields),
+-- so callers always get a plain boolean rather than a tainted value that
+-- would taint their own execution on comparison.
+function Utils:GetUnitStatusFlags(unit)
+  unit = unit or "player"
+  local function flag(fn)
+    if type(fn) ~= "function" then return false end
+    local ok, v = pcall(fn, unit)
+    if not ok or issecretvalue(v) then return false end
+    return v and true or false
+  end
+  return flag(UnitIsAFK), flag(UnitIsDND), flag(UnitIsPVP)
+end
+
 function Utils:GetTooltipData()
   local tooltipLines = {}
   if not UnitIsPlayer("mouseover") then
