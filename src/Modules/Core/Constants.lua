@@ -122,6 +122,27 @@ for _, def in pairs(Constants.CHANNELS) do
   end
 end
 
+-- Channels a watcher may fire on for EVERY message (the per-watcher matchAny
+-- toggle), keyed by channel key. Restricted to direct / small-audience
+-- channels so "reply to anything" can't be pointed at a firehose like Trade
+-- or a world channel. BNet whisper rides along with Whisper — both are direct
+-- messages, which is the case this mode was added for.
+Constants.MATCH_ANY_CHANNELS = { w = true, b = true, g = true, p = true, s = true, e = true }
+
+-- Reply-target codes a match-any watcher may send to, keyed by the reply
+-- short code (Constants.REPLY_CHANNELS). Mirrors MATCH_ANY_CHANNELS so a
+-- "reply to anything" watcher can't be pointed at a spammy reply target
+-- either. "same" is always allowed — it just echoes back the source channel,
+-- which is itself already restricted. There is no "b" here: BNet replies go
+-- out via "same".
+Constants.MATCH_ANY_REPLY_CHANNELS = { same = true, w = true, g = true, p = true, s = true, e = true }
+
+-- Stand-in "matched phrase" for a match-any fire. There is no real trigger
+-- phrase, so this is what {trigger} resolves to and what Stats groups the
+-- fire under (a stable constant keeps the Stats key from exploding into one
+-- entry per distinct incoming message).
+Constants.MATCH_ANY_TRIGGER = "(any message)"
+
 Constants.REPLY_CHANNELS = { "same", "w", "g", "s", "p", "i", "r", "e", "cg", "ct", "cs" }
 Constants.REPLY_CHANNEL_LABEL = {
   same = "Same channel",
@@ -142,6 +163,7 @@ Constants.PLACEHOLDERS = {
   { key = "trigger", doc = "The matched phrase, verbatim from your trigger list." },
   { key = "channel", doc = "Label of the channel the trigger fired in (Whisper, Party, Raid, ...)." },
   { key = "purr",    doc = "A random cat-flavored action — *purr*, *purrs*, or *purrs softly*." },
+  { key = "name",    doc = "Your current character's name." },
 }
 
 -- Pool the {purr} placeholder picks from at fire time. Plain strings sent
@@ -289,6 +311,10 @@ function Constants.NEW_WATCHER_DEFAULTS()
     -- true means it lives in the account-wide bucket and fires on every
     -- character. Toggleable from the Trigger config checkbox.
     accountWide = false,
+    -- When true the watcher fires on every message in its ticked channels with
+    -- no trigger phrase. Restricted to Constants.MATCH_ANY_CHANNELS at both the
+    -- UI and dispatch layers so it can't be aimed at high-traffic channels.
+    matchAny = false,
     triggers = {},
     -- Parallel to `triggers`: boolean per phrase. true means the phrase only
     -- matches when message casing matches exactly. nil/false = case-insensitive

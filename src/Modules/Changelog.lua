@@ -2,6 +2,17 @@ local _, addon = ...
 
 addon.MBLib.Changelog:Set({
   {
+    version = "12.1.0.0",
+    date = "2026-07-20",
+    notify = true,
+    categories = {
+      ["New"] = {
+        "New {name} placeholder for your current character's name — use it in replies, or in a trigger phrase to match your own name without typing it in.",
+        "New \"Trigger on any message\" option — a watcher can now fire on every message with no trigger phrase.",
+      },
+    },
+  },
+  {
     version = "12.0.7.3",
     date = "2026-07-02",
     notify = false,

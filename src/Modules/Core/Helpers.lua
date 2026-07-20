@@ -29,6 +29,19 @@ function Helpers.matchWholeWord(lower, phraseLower)
   end
 end
 
+-- {name} inside a trigger phrase resolves to the logged-in character's name
+-- at match time, so a phrase can track "my own name" without hardcoding it —
+-- handy when hopping between alts during testing. Only {name} is meaningful
+-- here: sender / channel / trigger aren't known until a message actually
+-- matches, so they stay literal in a trigger phrase. Cheap early-out when the
+-- token isn't present so the common case pays nothing.
+function Helpers.expandTriggerPlaceholders(phrase)
+  if type(phrase) ~= "string" or phrase == "" then return phrase end
+  if not phrase:find("{name}", 1, true) then return phrase end
+  local me = (UnitName and UnitName("player")) or ""
+  return (phrase:gsub("{name}", me))
+end
+
 -- Returns the first phrase from `list` that matches `message`, or nil. All
 -- per-phrase flags are parallel arrays indexed alongside `list`:
 --   exactList[i]            truthy -> the trimmed message must equal phrase i
@@ -50,6 +63,7 @@ function Helpers.findIn(message, list, exactList, caseSensitiveList, partialList
   local origTrimmed  = message:match("^%s*(.-)%s*$") or message
 
   for i, phrase in ipairs(list) do
+    phrase = Helpers.expandTriggerPlaceholders(phrase)
     if phrase ~= "" then
       local cs = caseSensitiveList and caseSensitiveList[i] or false
       local ex = exactList and exactList[i] or false

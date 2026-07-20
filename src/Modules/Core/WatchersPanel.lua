@@ -206,7 +206,11 @@ end
 -- on the left. Labels keep their natural color (e.g. per-channel chat color)
 -- on every row, including the selected one — selection is indicated only by
 -- the bullet, not by overriding the text color.
-local function makeDropdown(parent, width, options, onSelect, getCurrent)
+-- includeFn(value) is optional: return false to omit that entry from the menu
+-- entirely (used to hide reply channels that match-any mode forbids). Evaluated
+-- inside SetupMenu's builder, so it re-reads live state each time the menu
+-- opens — no rebuild needed when the gating changes.
+local function makeDropdown(parent, width, options, onSelect, getCurrent, includeFn)
   local dd = CreateFrame("DropdownButton", nil, parent, "WowStyle1DropdownTemplate")
   dd:SetWidth(width)
 
@@ -234,7 +238,9 @@ local function makeDropdown(parent, width, options, onSelect, getCurrent)
         if dd.GenerateMenu then dd:GenerateMenu() end
         if dd.OverrideText then dd:OverrideText(labelFor(value)) end
       end
-      rootDescription:CreateRadio(opt.label or tostring(value), isSelected, setSelected, value)
+      if not includeFn or includeFn(value) then
+        rootDescription:CreateRadio(opt.label or tostring(value), isSelected, setSelected, value)
+      end
     end
   end)
 
@@ -452,7 +458,11 @@ local function describeWatcher(w)
   -- Per-phrase exactness isn't surfaced in the list row (too granular for a
   -- one-line summary) — the editor exposes it.
   local triggerLabel = L.LIST_ROW_FIELD_TRIGGER
-  if #triggerList == 0 then
+  if w.matchAny then
+    -- Match-any ignores the phrase list, so summarize it as such rather than
+    -- showing a dash (or stale phrases the watcher no longer uses).
+    table.insert(lines, labelled(triggerLabel, colored(L.EDIT_MATCH_ANY_LABEL, COLOR_SOFT)))
+  elseif #triggerList == 0 then
     table.insert(lines, labelled(triggerLabel, L.LIST_ROW_PLACEHOLDER_DASH))
   else
     table.insert(lines, labelled(triggerLabel, describeListJoined(triggerList)))
@@ -1306,6 +1316,53 @@ local function buildEditForm(parent)
   trigDesc:SetWidth(INNER_WIDTH)
   trigDesc:SetJustifyH("LEFT")
 
+  -- "Reply to any message" — when ticked the watcher fires on every message in
+  -- its (restricted) channels, so the phrase rows below are greyed out and
+  -- ignored. refreshEditForm applies the enable/disable state; the channel
+  -- grid narrows to Constants.MATCH_ANY_CHANNELS while this is on.
+  local matchAnyCb = makeCheckbox(triggerPanel, L.EDIT_MATCH_ANY_LABEL)
+  matchAnyCb:SetPoint("TOPLEFT", trigDesc, "BOTTOMLEFT", 0, -6)
+  matchAnyCb:SetScript("OnClick", function(self)
+    if not Panel.state then return end
+    local on = self:GetChecked() and true or false
+    Panel.state.matchAny = on
+    -- Turning the mode on drops any already-ticked channels it forbids, so the
+    -- watcher can't keep a now-disallowed channel selected. Same for a reply
+    -- target the mode no longer permits. refreshEditForm reflects the cleared
+    -- state into the widgets.
+    if on and Panel.state.channels then
+      for key in pairs(Panel.state.channels) do
+        if not Constants.MATCH_ANY_CHANNELS[key] then
+          Panel.state.channels[key] = nil
+        end
+      end
+      if Panel.state.reply and not Constants.MATCH_ANY_REPLY_CHANNELS[Panel.state.reply.ch or "same"] then
+        Panel.state.reply.ch = "same"
+      end
+    end
+    refreshEditForm()
+    Panel:updateSaveButton()
+  end)
+  matchAnyCb:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText(L.EDIT_MATCH_ANY_TOOLTIP_TITLE, 1, 1, 1)
+    GameTooltip:AddLine(L.EDIT_MATCH_ANY_TOOLTIP_DESC, nil, nil, nil, true)
+    GameTooltip:Show()
+  end)
+  matchAnyCb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  frame.matchAnyCb = matchAnyCb
+
+  -- Slight-red note spelling out WHY some channels are locked. Shown only
+  -- while match-any is on (refreshEditForm toggles it). Its line is reserved
+  -- even when hidden so the column header below doesn't jump as it toggles.
+  local matchAnyNote = makeMutedLabel(triggerPanel, L.EDIT_MATCH_ANY_RESTRICT_NOTE)
+  matchAnyNote:SetPoint("TOPLEFT", matchAnyCb, "BOTTOMLEFT", 4, -2)
+  matchAnyNote:SetWidth(INNER_WIDTH)
+  matchAnyNote:SetJustifyH("LEFT")
+  matchAnyNote:SetTextColor(1, 0.4, 0.4)
+  matchAnyNote:Hide()
+  frame.matchAnyNote = matchAnyNote
+
   -- Column layout for the grid of trigger rows. The X (remove) button sits
   -- right after the input — they belong together as "this row" — while the
   -- modifier checkboxes (Case sensitive, Partial match, Exact match) are
@@ -1332,9 +1389,10 @@ local function buildEditForm(parent)
   -- each column. The checkbox labels wrap to two lines (literal "\n" in the
   -- string) so they fit the column width without bleeding sideways.
   local trigColHeader = CreateFrame("Frame", nil, triggerPanel)
-  trigColHeader:SetPoint("TOPLEFT", trigDesc, "BOTTOMLEFT", 0, -8)
+  trigColHeader:SetPoint("TOPLEFT", matchAnyNote, "BOTTOMLEFT", -4, -8)
   trigColHeader:SetHeight(28)
   trigColHeader:SetWidth(TRIG_REMOVE_X + 30)
+  frame.trigColHeader = trigColHeader
 
   -- The InputBoxTemplate's Left texture overhangs the frame by ~5 px, so
   -- the input's *visible* left sits a few pixels left of its frame's LEFT.
@@ -1535,7 +1593,15 @@ local function buildEditForm(parent)
     function(value)
       if Panel.state then Panel.state.reply.ch = value end
     end,
-    function() return Panel.state and Panel.state.reply.ch end)
+    function() return Panel.state and Panel.state.reply.ch end,
+    -- Match-any restricts the reply target to the same set as the listen
+    -- channels, so a "trigger on anything" watcher can't spam a busy channel
+    -- on the way back out either. Forbidden targets are filtered out of the
+    -- menu entirely while match-any is on.
+    function(value)
+      if not (Panel.state and Panel.state.matchAny) then return true end
+      return Constants.MATCH_ANY_REPLY_CHANNELS[value] and true or false
+    end)
   replyChBtn:SetPoint("LEFT", replyChLabel, "RIGHT", 10, 0)
   frame.replyChBtn = replyChBtn
 
@@ -1555,12 +1621,24 @@ local function buildEditForm(parent)
   noteEmoteLine:SetWidth(INNER_WIDTH)
   noteEmoteLine:SetJustifyH("LEFT")
 
+  -- Slight-red note mirroring the Trigger tab's: explains that some reply
+  -- targets are locked while match-any is on. Shown only in that mode
+  -- (refreshEditForm toggles it); its line is reserved so the reply rows
+  -- below don't jump as it appears/disappears.
+  local replyMatchAnyNote = makeMutedLabel(replyPanel, L.EDIT_MATCH_ANY_RESTRICT_NOTE)
+  replyMatchAnyNote:SetPoint("TOPLEFT", noteEmoteLine, "BOTTOMLEFT", 0, -4)
+  replyMatchAnyNote:SetWidth(INNER_WIDTH)
+  replyMatchAnyNote:SetJustifyH("LEFT")
+  replyMatchAnyNote:SetTextColor(1, 0.4, 0.4)
+  replyMatchAnyNote:Hide()
+  frame.replyMatchAnyNote = replyMatchAnyNote
+
   -- replyArea anchors the FIRST reply row only; rebuildReplyInputs chains
   -- the rest from each previous row. replyBlockBottom is a 1×1 placeholder
   -- frame that the rebuild repositions to sit right below the +Add button,
   -- so anything anchored to it (placeholders / notes) reflows automatically.
   local replyArea = CreateFrame("Frame", nil, replyPanel)
-  replyArea:SetPoint("TOPLEFT", noteEmoteLine, "BOTTOMLEFT", 0, -10)
+  replyArea:SetPoint("TOPLEFT", replyMatchAnyNote, "BOTTOMLEFT", 0, -10)
   replyArea:SetSize(1, 1)
   frame.replyArea = replyArea
   frame.replyRows = {}
@@ -1610,7 +1688,7 @@ local function buildEditForm(parent)
   -- below it hide.
   textBlock.widgets    = {
     replyArea, replyChBtn, replyChLabel,
-    notePartyLine, noteEmoteLine,
+    notePartyLine, noteEmoteLine, replyMatchAnyNote,
     replyAddBtn,
     replyBlockBottom, placeholderHeader, placeholderDesc,
   }
@@ -2659,6 +2737,48 @@ refreshEditForm = function()
     if IsInGuild() then guildCb:Enable() else guildCb:Disable() end
   end
 
+  -- Match-any mode: sync the checkbox, then narrow the channel grid to the
+  -- allowed set and grey out the phrase inputs (no phrase is needed). Channels
+  -- outside the allowed set are unticked + disabled while it's on; toggling it
+  -- back off re-enables them. Guild keeps its own guildless gate above.
+  local matchAny = Panel.state.matchAny and true or false
+  if f.matchAnyCb then f.matchAnyCb:SetChecked(matchAny) end
+  if f.matchAnyNote then if matchAny then f.matchAnyNote:Show() else f.matchAnyNote:Hide() end end
+  local guildKey = Constants.CHANNELS.GUILD.key
+  for key, cb in pairs(f.channelChecks) do
+    local allowed = (not matchAny) or Constants.MATCH_ANY_CHANNELS[key]
+    if not allowed then
+      if s.channels[key] then s.channels[key] = nil end
+      cb:SetChecked(false)
+      cb:Disable()
+      cb:SetAlpha(0.4)
+    else
+      cb:SetAlpha(1)
+      if key ~= guildKey then cb:Enable() end
+    end
+  end
+
+  -- Match-any also locks the reply target: if the saved reply channel is one
+  -- of the now-forbidden ones, snap it back to "same" so a hidden/locked value
+  -- can't slip through to save. The dropdown greys the forbidden rows too.
+  if matchAny and s.reply and not Constants.MATCH_ANY_REPLY_CHANNELS[s.reply.ch or "same"] then
+    s.reply.ch = "same"
+  end
+
+  local trigEnabled = not matchAny
+  for _, row in ipairs(f.trigRows or {}) do
+    row.input:SetEnabled(trigEnabled)
+    row.caseCheck:SetEnabled(trigEnabled)
+    row.partialCheck:SetEnabled(trigEnabled)
+    row.exactCheck:SetEnabled(trigEnabled)
+    row.removeBtn:SetEnabled(trigEnabled)
+  end
+  if f.trigAddBtn then f.trigAddBtn:SetEnabled(trigEnabled) end
+  local trigAlpha = trigEnabled and 1 or 0.4
+  if f.trigArea      then f.trigArea:SetAlpha(trigAlpha) end
+  if f.trigColHeader then f.trigColHeader:SetAlpha(trigAlpha) end
+  if f.trigAddBtn    then f.trigAddBtn:SetAlpha(trigAlpha) end
+
 
   -- "Only when leader/assist" is only meaningful when a group channel is
   -- ticked. The checkbox lives inside the channel grid (right column, row 4)
@@ -2701,6 +2821,12 @@ refreshEditForm = function()
   end
   syncBlocks(f.notifyBlocks, s.notifications)
   syncBlocks(f.replyBlocks,  s.reply)
+
+  -- The reply-channel restriction note rides in the Text section's widget list
+  -- so section-collapse hides it, but it should only appear while match-any is
+  -- on. syncBlocks may have just shown it with the rest of an expanded Text
+  -- section — hide it again unless match-any is active.
+  if f.replyMatchAnyNote and not matchAny then f.replyMatchAnyNote:Hide() end
 
   -- Snapshot live input text into the texts list so updateSaveButton and
   -- save validation see the user's in-flight edits (OnTextChanged only
@@ -3644,8 +3770,10 @@ function Panel:updateSaveButton()
   local s = Panel.state
   if not f or not s or not f.saveBtn then return end
 
-  local hasTrigger = false
-  if f.trigRows then
+  -- Match-any needs no phrase, so it satisfies the trigger requirement on its
+  -- own. Otherwise at least one non-empty phrase row is required.
+  local hasTrigger = s.matchAny and true or false
+  if not hasTrigger and f.trigRows then
     for _, row in ipairs(f.trigRows) do
       local txt = row.input:GetText() or ""
       if txt:match("%S") then hasTrigger = true break end
@@ -3748,7 +3876,7 @@ function Panel:saveEdit()
   -- Save on the same conditions, so users normally can't reach them. If
   -- somehow they do (race / out-of-sync state), surface the reason in
   -- chat rather than silently no-op.
-  if #s.triggers == 0 then
+  if not s.matchAny and #s.triggers == 0 then
     reportSaveError(L.EDIT_ERR_NO_TRIGGER)
     return
   end

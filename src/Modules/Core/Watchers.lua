@@ -109,6 +109,10 @@ local function normalizeWatcher(w)
   -- bucket they were migrated into).
   if w.accountWide == nil then w.accountWide = false end
 
+  -- matchAny: legacy watchers predate the "reply to any message" toggle —
+  -- default off so they keep requiring a trigger phrase.
+  if w.matchAny == nil then w.matchAny = false end
+
   -- Per-trigger case-sensitive flags parallel to w.triggers. Older watchers
   -- predate this field — default everything to nil (case-insensitive).
   if type(w.triggerCaseSensitive) ~= "table" then
@@ -698,6 +702,7 @@ local function sendReply(watcher, channelKey, sender, bnSenderID, trigger)
     trigger = trigger or "",
     channel = (def and def.label) or "",
     purr    = pickRandom(Constants.PURR_PHRASES) or "",
+    name    = (UnitName and UnitName("player")) or "",
   })
 
   -- Reply text transforms (Extras subscribe via Hooks). Each transform is
@@ -1271,6 +1276,9 @@ local function applyTriggerColoring(message, channelKey)
       local partialFlags = watcher.triggerPartial or {}
       for i, phrase in ipairs(watcher.triggers) do
         local c = colors[i]
+        -- Resolve {name} to the current character so the highlight tracks
+        -- the same text findIn will actually match on.
+        phrase = Helpers.expandTriggerPlaceholders(phrase)
         if phrase and phrase ~= "" and c and c ~= "" then
           -- De-dupe per phrase. The dedupe key tracks casing AND match mode
           -- (exact / partial / whole-word) so e.g. an exact rule for "Foo"
@@ -1457,12 +1465,21 @@ function Watchers:ProcessMessage(channelKey, sender, message, bnSenderID)
           filtersAllow = addon.Filters:Allow(watcher, { sender = sender, bnSenderID = bnSenderID })
         end
         if not gated and filtersAllow then
-          -- Pass the ORIGINAL message (not lowered) so per-phrase
-          -- case-sensitive matching can compare against the source casing.
-          -- findIn lowercases internally as needed. Match mode (exact /
-          -- partial / whole-word) and case-sensitivity are all per-trigger
-          -- arrays parallel to watcher.triggers.
-          local trigger = Helpers.findIn(message, watcher.triggers, watcher.triggerExact, watcher.triggerCaseSensitive, watcher.triggerPartial)
+          -- matchAny fires on every message with no phrase needed, but only
+          -- on the restricted channel set (guarded here too, not just in the
+          -- UI, so an imported/hand-edited watcher can't aim it at a firehose).
+          -- Otherwise fall back to normal per-phrase matching. Passes the
+          -- ORIGINAL message (not lowered) so per-phrase case-sensitive
+          -- matching can compare against the source casing; findIn lowercases
+          -- internally as needed. Match mode (exact / partial / whole-word)
+          -- and case-sensitivity are all per-trigger arrays parallel to
+          -- watcher.triggers.
+          local trigger
+          if watcher.matchAny and Constants.MATCH_ANY_CHANNELS[channelKey] then
+            trigger = Constants.MATCH_ANY_TRIGGER
+          else
+            trigger = Helpers.findIn(message, watcher.triggers, watcher.triggerExact, watcher.triggerCaseSensitive, watcher.triggerPartial)
+          end
           if trigger then
             dispatch(watcher, channelKey, sender, bnSenderID, trigger)
             recordWatcherCooldown(watcher, sender, bnSenderID)
