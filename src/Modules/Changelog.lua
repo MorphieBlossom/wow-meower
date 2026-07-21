@@ -2,6 +2,16 @@ local _, addon = ...
 
 addon.MBLib.Changelog:Set({
   {
+    version = "12.1.0.1",
+    date = "2026-07-21",
+    notify = false,
+    categories = {
+      ["Fixed"] = {
+        "TOC file version",
+      },
+    },
+  },
+  {
     version = "12.1.0.0",
     date = "2026-07-20",
     notify = true,
