@@ -2,6 +2,16 @@ local _, addon = ...
 
 addon.MBLib.Changelog:Set({
   {
+    version = "12.1.0.2",
+    date = "2026-08-08",
+    notify = false,
+    categories = {
+      ["Fixed"] = {
+        "Special-day reply flair now only applies to Say, Party, Raid, and Instance chat — emotes, whispers, guild, and world channels keep your exact text.",
+      },
+    },
+  },
+  {
     version = "12.1.0.1",
     date = "2026-07-21",
     notify = false,

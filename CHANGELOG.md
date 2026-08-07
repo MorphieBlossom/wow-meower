@@ -1,6 +1,11 @@
 ﻿# Changelog
 All notable changes to this project will be documented in this file.
 ---
+### `12.1.0.2` (2026-08-08)
+**Fixed**
+- Special-day reply flair now only applies to Say, Party, Raid, and Instance chat — emotes, whispers, guild, and world channels keep your exact text.
+
+---
 ### `12.1.0.1` (2026-07-21)
 **Fixed**
 - TOC file version. 

@@ -705,16 +705,23 @@ local function sendReply(watcher, channelKey, sender, bnSenderID, trigger)
     name    = (UnitName and UnitName("player")) or "",
   })
 
+  -- Effective outbound channel: "same" echoes back on the trigger's channel,
+  -- otherwise it's the explicit reply channel. Resolved before the transform
+  -- so channel-aware transforms (e.g. leaving /me emote prose literal) can
+  -- branch on where the reply actually goes out, not where it came from.
+  local ch = watcher.reply.ch or "same"
+  local outChannel = (ch == "same") and channelKey or ch
+
   -- Reply text transforms (Extras subscribe via Hooks). Each transform is
   -- pcall-wrapped; if any throw, the unmodified text carries through.
   resolved = Hooks:Transform("ReplyTransforms", resolved, {
     watcher    = watcher,
     sender     = sender,
     channelKey = channelKey,
+    outChannel = outChannel,
     trigger    = trigger,
   })
 
-  local ch = watcher.reply.ch or "same"
   if ch == "same" then
     sendReplySameChannel(channelKey, resolved, sender, bnSenderID)
   else

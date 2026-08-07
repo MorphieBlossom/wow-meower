@@ -192,10 +192,34 @@ function Woofer:HasActiveRule()
   return false
 end
 
+-- The date flair only touches conversational chat. Emote (/me RP prose),
+-- whispers, guild, and world channels are left literal so carefully-written
+-- text and out-of-band replies aren't mangled. Keyed off Constants so the
+-- single-letter codes stay in one place.
+local function allowedChannels()
+  local C = addon.Constants and addon.Constants.CHANNELS
+  local function k(name, fallback)
+    local c = C and C[name]
+    return (c and c.key) or fallback
+  end
+  return {
+    [k("SAY", "s")]      = true,
+    [k("PARTY", "p")]    = true,
+    [k("RAID", "r")]     = true,
+    [k("INSTANCE", "i")] = true,
+  }
+end
+
 local function run(text, ctx)
   if not optedIn() then return text end
   if userFlagSet() then return text end
   if type(text) ~= "string" or text == "" then return text end
+  -- Only Say / Party / Raid / Instance replies get the date flair. Anything
+  -- else (Emote, Whisper, BNet, Guild, world channels) or an unknown channel
+  -- passes through untouched. ctx.outChannel is the resolved outbound
+  -- channel, not the trigger's channel.
+  local outChannel = ctx and ctx.outChannel
+  if not (outChannel and allowedChannels()[outChannel]) then return text end
   local t = ctxNow()
   local out = text
   for _, r in ipairs(Woofer.rules) do
