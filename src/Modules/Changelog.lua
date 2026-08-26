@@ -2,6 +2,21 @@ local _, addon = ...
 
 addon.MBLib.Changelog:Set({
   {
+    version = "12.1.0.3",
+    date = "2026-08-26",
+    notify = false,
+    categories = {
+      ["Version update"] = {
+        "Now supports game version 12.1.5 (dropped 12.0.7).",
+      },
+      ["Fixed"] = {
+        "\"Queue invite during combat\" now reliably holds invites until the fight ends — they no longer sometimes slip out mid-combat.",
+        "Combat auto-reply now says \"I'm in combat\" instead of \"You're in combat\" — it's your combat holding the invite, not theirs.",
+        "Kicks during combat are no longer whispered to the target.",
+      },
+    },
+  },
+  {
     version = "12.1.0.2",
     date = "2026-08-08",
     notify = false,

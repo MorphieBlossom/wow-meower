@@ -897,9 +897,10 @@ local function showKickPopup(channelKey, sender, bnSenderID, trigger)
     return
   end
   if InCombatLockdown() then
+    -- A kick is a penalty, not something the target asked for — never whisper
+    -- them about it (both mislabels it and tips them off). Just queue silently.
     table.insert(pendingActions, { kind = "kick", channelKey = channelKey, sender = sender,
                                    bnSenderID = bnSenderID, trigger = trigger })
-    combatNotice(sender, "You're in combat — your kick prompt will surface after combat ends.")
     return
   end
   local target = targetCharFor(channelKey, sender, bnSenderID)
@@ -950,7 +951,7 @@ local function showInvitePopup(channelKey, sender, bnSenderID, trigger)
   if InCombatLockdown() then
     table.insert(pendingActions, { kind = "inviteConfirm", channelKey = channelKey, sender = sender,
                                    bnSenderID = bnSenderID, trigger = trigger })
-    combatNotice(sender, "You're in combat — your invite request will be handled after combat ends.")
+    combatNotice(sender, "I'm in combat — I'll open your invite request when combat ends.")
     return
   end
   local target = targetCharFor(channelKey, sender, bnSenderID)
@@ -979,10 +980,16 @@ local function tryInvite(watcher, channelKey, sender, bnSenderID, trigger)
     return
   end
 
-  if InCombatLockdown() and watcher.reply.inviteQueue ~= false then
+  -- Gate on UnitAffectingCombat, NOT InCombatLockdown. InviteUnit isn't a
+  -- protected call, so InCombatLockdown (which reports secure-op restrictions)
+  -- is the wrong predicate — it can read false while the player is still
+  -- combat-flagged, letting the invite fire mid-combat despite the queue
+  -- setting. UnitAffectingCombat("player") is the real "am I fighting" check,
+  -- and combat end (PLAYER_REGEN_ENABLED) is exactly when the drain runs.
+  if UnitAffectingCombat("player") and watcher.reply.inviteQueue ~= false then
     table.insert(pendingActions, { kind = "invite", channelKey = channelKey, sender = sender,
                                    bnSenderID = bnSenderID, trigger = trigger })
-    combatNotice(sender, "You're in combat — your invite request will be handled after combat ends.")
+    combatNotice(sender, "I'm in combat — I'll send your invite when combat ends.")
     return
   end
 
@@ -1014,7 +1021,7 @@ local function showGuildInvitePopup(channelKey, sender, bnSenderID, trigger)
   if InCombatLockdown() then
     table.insert(pendingActions, { kind = "guildInvite", channelKey = channelKey, sender = sender,
                                    bnSenderID = bnSenderID, trigger = trigger })
-    combatNotice(sender, "You're in combat — your guild-invite prompt will surface after combat ends.")
+    combatNotice(sender, "I'm in combat — I'll send your guild invite when combat ends.")
     return
   end
   local target = targetCharFor(channelKey, sender, bnSenderID)
@@ -1057,7 +1064,7 @@ local function drainPendingActions()
 
   for _, req in ipairs(snapshot) do
     if req.kind == "kick" then
-      combatNotice(req.sender, "Combat ended — kick prompt opening now.")
+      -- No whisper: a kick is a silent penalty, never announced to the target.
       showKickPopup(req.channelKey, req.sender, req.bnSenderID, req.trigger)
     elseif req.kind == "guildInvite" then
       combatNotice(req.sender, "Combat ended — guild-invite prompt opening now.")

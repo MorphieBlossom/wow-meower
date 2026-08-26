@@ -1,6 +1,16 @@
 ﻿# Changelog
 All notable changes to this project will be documented in this file.
 ---
+### `12.1.0.3` (2026-08-26)
+**Version update**
+- Now supports game version 12.1.5 (dropped 12.0.7).
+
+**Fixed**
+- "Queue invite during combat" now reliably holds invites until the fight ends — they no longer sometimes slip out mid-combat.
+- Combat auto-reply now says "I'm in combat" instead of "You're in combat" — it's your combat holding the invite, not theirs.
+- Kicks during combat are no longer whispered to the target.
+
+---
 ### `12.1.0.2` (2026-08-08)
 **Fixed**
 - Special-day reply flair now only applies to Say, Party, Raid, and Instance chat — emotes, whispers, guild, and world channels keep your exact text.
